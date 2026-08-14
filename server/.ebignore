@@ -1,0 +1,10 @@
+# Elastic Beanstalk / deploy packaging
+.git
+.gitignore
+*.bak
+data/*.db
+data/*.db-*
+data/tickets.json
+node_modules
+npm-debug.log
+.DS_Store

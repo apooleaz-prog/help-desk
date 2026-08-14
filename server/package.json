@@ -1,0 +1,21 @@
+{
+  "name": "help-desk-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js",
+    "db:shell": "sqlite3 data/helpdesk.db"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "pg": "^8.23.0",
+    "uuid": "^11.1.0"
+  }
+}

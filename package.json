@@ -1,0 +1,13 @@
+{
+  "name": "help-desk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simple help desk with Express + React",
+  "scripts": {
+    "install:all": "npm install --prefix server && npm install --prefix client",
+    "dev": "npm run dev --prefix server & npm run dev --prefix client",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "start": "npm start --prefix server"
+  }
+}

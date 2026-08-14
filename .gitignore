@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+server/data/tickets.json
+server/data/helpdesk.db
+server/data/helpdesk.db-*
+.env
+.env.*
+.deploy-db-pass.tmp
+.deploy-meta.tmp
+server/src/*.bak
