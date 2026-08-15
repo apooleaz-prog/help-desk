@@ -29,6 +29,18 @@ import {
   ensureReady,
   readDb,
   writeDb,
+  listManufacturers,
+  findManufacturerById,
+  findManufacturerByName,
+  insertManufacturer,
+  updateManufacturerRecord,
+  removeManufacturer,
+  listAssetTypes,
+  findAssetTypeById,
+  findAssetTypeByName,
+  insertAssetType,
+  updateAssetTypeRecord,
+  removeAssetType,
 } from "./db.js";
 
 const app = express();
@@ -58,6 +70,64 @@ function normalizePersonPhone(phone) {
   if (phone === undefined) return undefined;
   if (phone === null || phone === "") return "";
   return String(phone).trim();
+}
+
+const STOCK_UA = "HelpDesk/1.0 (asset type stock images)";
+
+async function fetchJsonUrl(url) {
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": STOCK_UA },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) {
+    throw new Error(`search failed (${res.status})`);
+  }
+  return res.json();
+}
+
+async function downloadStockImage(url) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": STOCK_UA },
+    signal: AbortSignal.timeout(10000),
+    redirect: "follow",
+  });
+  if (!res.ok) return null;
+  const mime = (res.headers.get("content-type") || "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (!/^image\/(jpeg|jpg|png|gif|webp)$/.test(mime)) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 800 || buf.length > 1_500_000) return null;
+  const normalizedMime = mime === "image/jpg" ? "image/jpeg" : mime;
+  const dataUrl = `data:${normalizedMime};base64,${buf.toString("base64")}`;
+  if (dataUrl.length > PERSON_IMAGE_MAX) return null;
+  return dataUrl;
+}
+
+async function stockImageUrlsFor(query) {
+  const urls = [];
+  try {
+    const data = await fetchJsonUrl(
+      `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=20&mature=false`
+    );
+    for (const result of data.results ?? []) {
+      urls.push(result.thumbnail || result.url);
+    }
+  } catch {
+    // try Wikipedia next
+  }
+  try {
+    const data = await fetchJsonUrl(
+      `https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrlimit=10&prop=pageimages&pithumbsize=480&format=json`
+    );
+    for (const page of Object.values(data.query?.pages ?? {})) {
+      if (page.thumbnail?.source) urls.push(page.thumbnail.source);
+    }
+  } catch {
+    // ignore
+  }
+  return [...new Set(urls)];
 }
 
 app.get("/api/health", (_req, res) => {
@@ -118,6 +188,44 @@ app.use("/api", (req, res, next) => {
     return next();
   }
   return requireAuth(req, res, next);
+});
+
+app.get("/api/stock-image", requireAgent, async (req, res) => {
+  const query = String(req.query.q ?? "").trim();
+  if (!query) {
+    return res.status(400).json({ error: "a name is required to find a stock image" });
+  }
+
+  const skip = Math.max(0, Number.parseInt(String(req.query.skip ?? "0"), 10) || 0);
+
+  try {
+    const urls = await stockImageUrlsFor(query);
+    const candidates = [];
+    for (const url of urls) {
+      const image = await downloadStockImage(url);
+      if (!image) continue;
+      candidates.push({ image, source: url });
+      if (skip === 0) {
+        return res.json(candidates[0]);
+      }
+      if (candidates.length > skip) {
+        return res.json(candidates[skip]);
+      }
+    }
+    if (!candidates.length) {
+      return res.status(404).json({ error: "No stock image found for that name" });
+    }
+    if (candidates.length === 1 && skip > 0) {
+      return res.status(404).json({
+        error: "No other stock image found for that name",
+      });
+    }
+    return res.json(candidates[skip % candidates.length]);
+  } catch (err) {
+    return res.status(502).json({
+      error: err.message || "Could not search stock images",
+    });
+  }
 });
 
 app.get("/api/agents", requireAgent, async (_req, res) => {
@@ -233,6 +341,178 @@ app.delete("/api/agents/:id", requireAgent, async (req, res) => {
   db.sessions = db.sessions.filter((s) => s.agentId !== removed.id);
   await writeDb(db);
 
+  res.json({ ok: true });
+});
+
+app.get("/api/manufacturers", requireAgent, async (_req, res) => {
+  res.json(await listManufacturers());
+});
+
+app.post("/api/manufacturers", requireAgent, async (req, res) => {
+  const { name, details = "" } = req.body ?? {};
+
+  if (!name?.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+
+  if (notesBodyTooLarge(details)) {
+    return res.status(400).json({ error: "details is too large" });
+  }
+
+  const normalizedName = name.trim();
+  const duplicate = await findManufacturerByName(normalizedName);
+  if (duplicate) {
+    return res.status(409).json({
+      error: "A manufacturer with that name already exists",
+    });
+  }
+
+  const now = new Date().toISOString();
+  const manufacturer = await insertManufacturer({
+    id: uuidv4(),
+    name: normalizedName,
+    details: String(details ?? "").trim(),
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  res.status(201).json(manufacturer);
+});
+
+app.patch("/api/manufacturers/:id", requireAgent, async (req, res) => {
+  const current = await findManufacturerById(req.params.id);
+  if (!current) {
+    return res.status(404).json({ error: "Manufacturer not found" });
+  }
+
+  const { name, details } = req.body ?? {};
+  const fields = {};
+
+  if (name !== undefined) {
+    if (!String(name).trim()) {
+      return res.status(400).json({ error: "name is required" });
+    }
+    const normalizedName = String(name).trim();
+    const duplicate = await findManufacturerByName(normalizedName);
+    if (duplicate && duplicate.id !== current.id) {
+      return res.status(409).json({
+        error: "A manufacturer with that name already exists",
+      });
+    }
+    fields.name = normalizedName;
+  }
+
+  if (details !== undefined) {
+    if (notesBodyTooLarge(details)) {
+      return res.status(400).json({ error: "details is too large" });
+    }
+    fields.details = String(details ?? "").trim();
+  }
+
+  const updated = await updateManufacturerRecord(current.id, fields);
+  res.json(updated);
+});
+
+app.delete("/api/manufacturers/:id", requireAgent, async (req, res) => {
+  const removed = await removeManufacturer(req.params.id);
+  if (!removed) {
+    return res.status(404).json({ error: "Manufacturer not found" });
+  }
+  res.json({ ok: true });
+});
+
+app.get("/api/asset-types", requireAgent, async (_req, res) => {
+  res.json(await listAssetTypes());
+});
+
+app.post("/api/asset-types", requireAgent, async (req, res) => {
+  const { name, details = "", image } = req.body ?? {};
+
+  if (!name?.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+
+  if (notesBodyTooLarge(details)) {
+    return res.status(400).json({ error: "details is too large" });
+  }
+
+  const normalizedImage = normalizePersonImage(image);
+  if (image !== undefined && normalizedImage === null) {
+    return res.status(400).json({
+      error: "image must be a jpeg, png, gif, or webp under 1.5MB",
+    });
+  }
+
+  const normalizedName = name.trim();
+  const duplicate = await findAssetTypeByName(normalizedName);
+  if (duplicate) {
+    return res.status(409).json({
+      error: "An asset type with that name already exists",
+    });
+  }
+
+  const now = new Date().toISOString();
+  const assetType = await insertAssetType({
+    id: uuidv4(),
+    name: normalizedName,
+    details: String(details ?? "").trim(),
+    image: normalizedImage || "",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  res.status(201).json(assetType);
+});
+
+app.patch("/api/asset-types/:id", requireAgent, async (req, res) => {
+  const current = await findAssetTypeById(req.params.id);
+  if (!current) {
+    return res.status(404).json({ error: "Asset type not found" });
+  }
+
+  const { name, details, image } = req.body ?? {};
+  const fields = {};
+
+  if (name !== undefined) {
+    if (!String(name).trim()) {
+      return res.status(400).json({ error: "name is required" });
+    }
+    const normalizedName = String(name).trim();
+    const duplicate = await findAssetTypeByName(normalizedName);
+    if (duplicate && duplicate.id !== current.id) {
+      return res.status(409).json({
+        error: "An asset type with that name already exists",
+      });
+    }
+    fields.name = normalizedName;
+  }
+
+  if (details !== undefined) {
+    if (notesBodyTooLarge(details)) {
+      return res.status(400).json({ error: "details is too large" });
+    }
+    fields.details = String(details ?? "").trim();
+  }
+
+  if (image !== undefined) {
+    const normalizedImage = normalizePersonImage(image);
+    if (normalizedImage === null) {
+      return res.status(400).json({
+        error: "image must be a jpeg, png, gif, or webp under 1.5MB",
+      });
+    }
+    fields.image = normalizedImage;
+  }
+
+  const updated = await updateAssetTypeRecord(current.id, fields);
+  res.json(updated);
+});
+
+app.delete("/api/asset-types/:id", requireAgent, async (req, res) => {
+  const removed = await removeAssetType(req.params.id);
+  if (!removed) {
+    return res.status(404).json({ error: "Asset type not found" });
+  }
   res.json({ ok: true });
 });
 
@@ -596,14 +876,20 @@ app.get("/api/tickets/:id", async (req, res) => {
   res.json(enrichTicket(db, ticket));
 });
 
-app.post("/api/tickets", requireAgent, async (req, res) => {
+app.post("/api/tickets", async (req, res) => {
   const {
     title,
     description,
-    companyId,
-    personId,
     priority = "medium",
   } = req.body ?? {};
+  let { companyId, personId } = req.body ?? {};
+
+  if (req.role === "person") {
+    companyId = req.person.companyId;
+    personId = req.person.id;
+  } else if (req.role !== "agent") {
+    return res.status(403).json({ error: "Agent access required" });
+  }
 
   if (!title?.trim() || !description?.trim() || !companyId || !personId) {
     return res.status(400).json({

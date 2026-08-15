@@ -5,14 +5,21 @@ import {
   addPerson,
   clearToken,
   createAgent,
+  createAssetType,
   createCompany,
+  createManufacturer,
   createTicket,
   deleteAgent,
+  deleteAssetType,
   deleteCompany,
+  deleteManufacturer,
   deletePerson,
   fetchAgents,
+  fetchAssetTypes,
   fetchCompanies,
+  fetchManufacturers,
   fetchMe,
+  fetchStockImage,
   fetchTicket,
   fetchTickets,
   getToken,
@@ -20,7 +27,9 @@ import {
   logout,
   setToken,
   updateAgent,
+  updateAssetType,
   updateCompany,
+  updateManufacturer,
   updatePerson,
   updateTicket,
 } from "./api";
@@ -58,6 +67,9 @@ function App() {
   const [tickets, setTickets] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [agents, setAgents] = useState([]);
+  const [manufacturers, setManufacturers] = useState([]);
+  const [assetTypes, setAssetTypes] = useState([]);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [selected, setSelected] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [companyFilter, setCompanyFilter] = useState("");
@@ -84,6 +96,7 @@ function App() {
     setPerson(null);
     setView("list");
     setSelected(null);
+    setShowAdvanced(false);
   }
 
   function handleAuthFailure(err) {
@@ -130,6 +143,18 @@ function App() {
   const loadAgents = useCallback(async () => {
     const data = await fetchAgents();
     setAgents(data);
+    return data;
+  }, []);
+
+  const loadManufacturers = useCallback(async () => {
+    const data = await fetchManufacturers();
+    setManufacturers(data);
+    return data;
+  }, []);
+
+  const loadAssetTypes = useCallback(async () => {
+    const data = await fetchAssetTypes();
+    setAssetTypes(data);
     return data;
   }, []);
 
@@ -185,6 +210,22 @@ function App() {
     }
   }, [isAgent, view, loadAgents]);
 
+  useEffect(() => {
+    if (isAgent && view === "manufacturers") {
+      loadManufacturers().catch((err) => {
+        if (!handleAuthFailure(err)) setError(err.message);
+      });
+    }
+  }, [isAgent, view, loadManufacturers]);
+
+  useEffect(() => {
+    if (isAgent && view === "assetTypes") {
+      loadAssetTypes().catch((err) => {
+        if (!handleAuthFailure(err)) setError(err.message);
+      });
+    }
+  }, [isAgent, view, loadAssetTypes]);
+
   async function handleLogin({ email, password }) {
     setSaving(true);
     setError("");
@@ -201,10 +242,16 @@ function App() {
         setPerson(null);
       }
       setView("list");
+      setShowAdvanced(false);
       setCompanyFilter("");
       setPriorityFilter("");
       setStatusFilter("all");
       setQuery("");
+      if (window.PasswordCredential && navigator.credentials?.store) {
+        navigator.credentials
+          .store(new PasswordCredential({ id: email, password }))
+          .catch(() => {});
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -432,6 +479,90 @@ function App() {
     }
   }
 
+  async function handleCreateManufacturer(payload) {
+    setSaving(true);
+    setError("");
+    try {
+      await createManufacturer(payload);
+      await loadManufacturers();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleUpdateManufacturer(id, payload) {
+    setSaving(true);
+    setError("");
+    try {
+      await updateManufacturer(id, payload);
+      await loadManufacturers();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteManufacturer(id) {
+    setSaving(true);
+    setError("");
+    try {
+      await deleteManufacturer(id);
+      await loadManufacturers();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCreateAssetType(payload) {
+    setSaving(true);
+    setError("");
+    try {
+      await createAssetType(payload);
+      await loadAssetTypes();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleUpdateAssetType(id, payload) {
+    setSaving(true);
+    setError("");
+    try {
+      await updateAssetType(id, payload);
+      await loadAssetTypes();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteAssetType(id) {
+    setSaving(true);
+    setError("");
+    try {
+      await deleteAssetType(id);
+      await loadAssetTypes();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (authChecking) {
     return (
       <div className="app">
@@ -450,37 +581,42 @@ function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
+      <header className="chrome">
+        <div className="topbar">
         <div className="brand-block">
           <button
             type="button"
             className="brand"
             onClick={() => {
+              setShowAdvanced(false);
               setView("list");
               setSelected(null);
             }}
           >
             <span className="brand-mark">HD</span>
-            <span className="brand-name">Help Desk</span>
+            <span className="brand-copy">
+              <span className="brand-name">Help Desk</span>
+              <span
+                className="agent-chip"
+                title={
+                  isPerson
+                    ? [person.email, person.phone, person.companyName]
+                        .filter(Boolean)
+                        .join(" · ")
+                    : [agent.email, agent.phone].filter(Boolean).join(" · ")
+                }
+              >
+                ({displayUser.name})
+              </span>
+            </span>
           </button>
-          <span
-            className="agent-chip"
-            title={
-              isPerson
-                ? [person.email, person.phone, person.companyName]
-                    .filter(Boolean)
-                    .join(" · ")
-                : [agent.email, agent.phone].filter(Boolean).join(" · ")
-            }
-          >
-            {displayUser.name}
-          </span>
         </div>
         <nav className="top-actions">
           <button
             type="button"
             className="btn icon ghost icon-tickets"
             onClick={() => {
+              setShowAdvanced(false);
               setView("list");
               setSelected(null);
               setStatusFilter("all");
@@ -507,69 +643,22 @@ function App() {
             </svg>
           </button>
           {isAgent && (
-            <>
-              <button
-                type="button"
-                className="btn icon ghost icon-agents"
-                onClick={() => setView("agents")}
-                aria-label="Agents"
-                data-tooltip="Agents"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path
-                    fill="#0d9488"
-                    d="M4.5 10.5a7.5 7.5 0 0 1 15 0V12a2 2 0 0 1-2 2h-1.25a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 .75-.75H18a5.5 5.5 0 1 0-11 0h.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75H6.5A2 2 0 0 1 4.5 12v-1.5Z"
-                  />
-                  <path
-                    fill="#2563eb"
-                    d="M12 16.25a.75.75 0 0 1 .75.75v.5A2.75 2.75 0 0 1 10 20.25h-.5a.75.75 0 0 1 0-1.5H10a1.25 1.25 0 0 0 1.25-1.25v-.5a.75.75 0 0 1 .75-.75Z"
-                  />
-                  <circle cx="12" cy="12.25" r="1.35" fill="#115e59" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="btn icon ghost icon-customers"
-                onClick={() => setView("companies")}
-                aria-label="Customers"
-                data-tooltip="Customers"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path
-                    fill="#ea580c"
-                    d="M3.75 21a.75.75 0 0 1-.75-.75V9.68c0-.28.12-.54.34-.71l8-6.1a.75.75 0 0 1 .92 0l8 6.1c.22.17.34.43.34.71v10.57a.75.75 0 0 1-.75.75H14.5v-5.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0-.75.75V21H3.75Z"
-                  />
-                  <path
-                    fill="#ffedd5"
-                    d="M8.25 10.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Zm-5.5 3.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Z"
-                  />
-                  <path fill="#c2410c" d="M10.25 21v-4.75h3.5V21h-3.5Z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="btn icon ghost icon-new-ticket"
-                onClick={() => setView("new")}
-                aria-label="New ticket"
-                data-tooltip="New ticket"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path
-                    fill="#0f6e6a"
-                    d="M4.5 5.25A1.75 1.75 0 0 1 6.25 3.5h11.5A1.75 1.75 0 0 1 19.5 5.25v13.5A1.75 1.75 0 0 1 17.75 20.5H6.25A1.75 1.75 0 0 1 4.5 18.75V5.25Z"
-                  />
-                  <path
-                    fill="#ccfbf1"
-                    d="M7.25 7.25h6.25a.75.75 0 0 1 0 1.5H7.25a.75.75 0 0 1 0-1.5Zm0 3.25h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z"
-                  />
-                  <circle cx="17.6" cy="17.6" r="5.2" fill="#e4572e" />
-                  <path
-                    fill="#fff7ed"
-                    d="M16.45 14.85h2.3v2.05h2.05v2.3H18.75v2.05h-2.3V19.2h-2.05v-2.3h2.05v-2.05Z"
-                  />
-                </svg>
-              </button>
-            </>
+            <button
+              type="button"
+              className={`btn icon ghost icon-advanced${showAdvanced ? " is-open" : ""}`}
+              onClick={() => setShowAdvanced(true)}
+              aria-label="Advanced"
+              aria-pressed={showAdvanced}
+              data-tooltip="Advanced"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="#7c3aed"
+                  d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96c-.5-.37-1.04-.68-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.26-1.13.57-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.8 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.92 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.13.24.43.34.7.22l2.39-.96c.5.37 1.04.68 1.63.94l.36 2.54c.05.24.26.42.49.42h3.8c.24 0 .45-.18.5-.42l.36-2.54c.59-.26 1.13-.57 1.63-.94l2.39.96c.27.11.56.02.7-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"
+                />
+                <circle cx="12" cy="12" r="2.05" fill="#ede9fe" />
+              </svg>
+            </button>
           )}
           <button
             type="button"
@@ -590,6 +679,94 @@ function App() {
             </svg>
           </button>
         </nav>
+        </div>
+        {isAgent && showAdvanced && (
+          <nav className="advanced-actions" aria-label="Advanced">
+            <button
+              type="button"
+              className={`btn icon ghost icon-agents${view === "agents" ? " is-active" : ""}`}
+              onClick={() => setView("agents")}
+              aria-label="Agents"
+              aria-pressed={view === "agents"}
+              data-tooltip="Agents"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="#0d9488"
+                  d="M4.5 10.5a7.5 7.5 0 0 1 15 0V12a2 2 0 0 1-2 2h-1.25a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 .75-.75H18a5.5 5.5 0 1 0-11 0h.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75H6.5A2 2 0 0 1 4.5 12v-1.5Z"
+                />
+                <path
+                  fill="#2563eb"
+                  d="M12 16.25a.75.75 0 0 1 .75.75v.5A2.75 2.75 0 0 1 10 20.25h-.5a.75.75 0 0 1 0-1.5H10a1.25 1.25 0 0 0 1.25-1.25v-.5a.75.75 0 0 1 .75-.75Z"
+                />
+                <circle cx="12" cy="12.25" r="1.35" fill="#115e59" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={`btn icon ghost icon-customers${view === "companies" ? " is-active" : ""}`}
+              onClick={() => setView("companies")}
+              aria-label="Customers"
+              aria-pressed={view === "companies"}
+              data-tooltip="Customers"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="#ea580c"
+                  d="M3.75 21a.75.75 0 0 1-.75-.75V9.68c0-.28.12-.54.34-.71l8-6.1a.75.75 0 0 1 .92 0l8 6.1c.22.17.34.43.34.71v10.57a.75.75 0 0 1-.75.75H14.5v-5.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0-.75.75V21H3.75Z"
+                />
+                <path
+                  fill="#ffedd5"
+                  d="M8.25 10.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Zm-5.5 3.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Z"
+                />
+                <path fill="#c2410c" d="M10.25 21v-4.75h3.5V21h-3.5Z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={`btn icon ghost icon-manufacturers${view === "manufacturers" ? " is-active" : ""}`}
+              onClick={() => setView("manufacturers")}
+              aria-label="Manufacturers"
+              aria-pressed={view === "manufacturers"}
+              data-tooltip="Manufacturers"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="#4f46e5"
+                  d="M2.75 20.5V10.4l5.25 3.1V8.9l5.5 3.25V4.5h1.85v1.7h1.55V4.5h2.35v16H2.75Z"
+                />
+                <path
+                  fill="#c7d2fe"
+                  d="M5.4 15.35h2.1v2.35H5.4v-2.35Zm3.7 0h2.1v2.35H9.1v-2.35Zm3.7 0h2.1v2.35h-2.1v-2.35Z"
+                />
+                <path fill="#6366f1" d="M16.9 4.5h2.35v3.15H16.9V4.5Z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={`btn icon ghost icon-asset-types${view === "assetTypes" ? " is-active" : ""}`}
+              onClick={() => setView("assetTypes")}
+              aria-label="Asset types"
+              aria-pressed={view === "assetTypes"}
+              data-tooltip="Asset types"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="#0e7490"
+                  d="M12 3.4 3.6 8.05 12 12.7l8.4-4.65L12 3.4Z"
+                />
+                <path
+                  fill="#155e75"
+                  d="M3.6 11.15 12 15.8l8.4-4.65v1.85L12 17.7 3.6 13Z"
+                />
+                <path
+                  fill="#67e8f9"
+                  d="M3.6 14.85 12 19.5l8.4-4.65v1.85L12 21.4 3.6 16.7Z"
+                />
+              </svg>
+            </button>
+          </nav>
+        )}
       </header>
 
       <main className="main">
@@ -623,6 +800,7 @@ function App() {
             }}
             onQuery={setQuery}
             onOpen={openTicket}
+            onCreate={() => setView("new")}
           />
         )}
 
@@ -630,7 +808,6 @@ function App() {
           <CompaniesView
             companies={companies}
             saving={saving}
-            onBack={() => setView("list")}
             onCreateCompany={handleCreateCompany}
             onUpdateCompany={handleUpdateCompany}
             onDeleteCompany={handleDeleteCompany}
@@ -645,17 +822,54 @@ function App() {
             agents={agents}
             currentAgentId={agent.id}
             saving={saving}
-            onBack={() => setView("list")}
             onCreate={handleCreateAgent}
             onUpdate={handleUpdateAgent}
             onDelete={handleDeleteAgent}
           />
         )}
 
-        {isAgent && view === "new" && (
+        {isAgent && view === "manufacturers" && (
+          <CatalogView
+            items={manufacturers}
+            saving={saving}
+            onCreate={handleCreateManufacturer}
+            onUpdate={handleUpdateManufacturer}
+            onDelete={handleDeleteManufacturer}
+            title="Manufacturers"
+            description="Vendors and equipment makers referenced in tickets."
+            itemLabel="manufacturer"
+            addLabel="Add manufacturer"
+            emptyLabel="No manufacturers yet."
+            namePlaceholder="Dell"
+            detailsPlaceholder="Support contacts, contract notes…"
+          />
+        )}
+
+        {isAgent && view === "assetTypes" && (
+          <CatalogView
+            items={assetTypes}
+            saving={saving}
+            onCreate={handleCreateAssetType}
+            onUpdate={handleUpdateAssetType}
+            onDelete={handleDeleteAssetType}
+            title="Asset types"
+            description="Categories of equipment and hardware you support."
+            itemLabel="asset type"
+            addLabel="Add asset type"
+            emptyLabel="No asset types yet."
+            namePlaceholder="Laptop"
+            detailsPlaceholder="Notes about this type of asset…"
+            withImage
+            imageVariant="asset"
+          />
+        )}
+
+        {(isAgent || isPerson) && view === "new" && (
           <NewTicketForm
             companies={companies}
             saving={saving}
+            portalMode={isPerson}
+            portalPerson={person}
             onCancel={() => setView("list")}
             onSubmit={handleCreate}
           />
@@ -667,10 +881,6 @@ function App() {
             agentName={displayUser.name}
             saving={saving}
             readOnly={isPerson}
-            onBack={() => {
-              setView("list");
-              setSelected(null);
-            }}
             onStatusChange={handleStatusChange}
             onPriorityChange={handlePriorityChange}
             onComment={handleComment}
@@ -761,21 +971,30 @@ function CancelIconButton({
   className = "",
 }) {
   return (
-    <button
-      type="button"
-      className={`btn icon-cancel ${className}`.trim()}
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      data-tooltip={label}
-    >
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path
-          fill="currentColor"
-          d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z"
-        />
-      </svg>
-    </button>
+    <span className={`cancel-wrap ${className}`.trim()}>
+      <button
+        type="button"
+        className="btn icon-cancel"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        title=""
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path
+            fill="currentColor"
+            d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z"
+          />
+        </svg>
+      </button>
+      <span
+        className="btn-tip"
+        aria-hidden="true"
+        style={{ top: "calc(100% + 8px)", bottom: "auto" }}
+      >
+        {label}
+      </span>
+    </span>
   );
 }
 
@@ -885,9 +1104,12 @@ function ImageImportButton({
   onChange,
   disabled = false,
   variant = "person",
+  allowAuto = false,
 }) {
   const inputRef = useRef(null);
+  const skipRef = useRef(0);
   const [busy, setBusy] = useState(false);
+  const [auto, setAuto] = useState(false);
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
@@ -896,12 +1118,40 @@ function ImageImportButton({
     setBusy(true);
     try {
       const dataUrl = await readImageAsDataUrl(file);
+      skipRef.current = 0;
       onChange(dataUrl);
     } catch (err) {
       window.alert(err.message || "Could not import image");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleImportClick() {
+    if (allowAuto && auto) {
+      const query = name.trim();
+      if (!query) {
+        window.alert("Enter a name first so auto can find a matching image.");
+        return;
+      }
+      setBusy(true);
+      try {
+        const skip = image ? skipRef.current + 1 : 0;
+        skipRef.current = skip;
+        const data = await fetchStockImage(query, { skip });
+        const res = await fetch(data.image);
+        const blob = await res.blob();
+        const type = blob.type || "image/jpeg";
+        const file = new File([blob], "stock", { type });
+        onChange(await readImageAsDataUrl(file, type));
+      } catch (err) {
+        window.alert(err.message || "Could not find a stock image");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    inputRef.current?.click();
   }
 
   return (
@@ -915,20 +1165,40 @@ function ImageImportButton({
           hidden
           onChange={handleFile}
         />
+        {allowAuto && (
+          <label className="auto-image-check">
+            <input
+              type="checkbox"
+              checked={auto}
+              disabled={disabled || busy}
+              onChange={(e) => setAuto(e.target.checked)}
+            />
+            auto
+          </label>
+        )}
         <button
           type="button"
           className="btn ghost compact"
           disabled={disabled || busy}
-          onClick={() => inputRef.current?.click()}
+          onClick={handleImportClick}
         >
-          {busy ? "Importing…" : image ? "Replace image" : "Import image"}
+          {busy
+            ? auto
+              ? "Finding…"
+              : "Importing…"
+            : image
+              ? "Replace image"
+              : "Import image"}
         </button>
         {image ? (
           <button
             type="button"
             className="btn ghost compact"
             disabled={disabled || busy}
-            onClick={() => onChange("")}
+            onClick={() => {
+              skipRef.current = 0;
+              onChange("");
+            }}
           >
             Remove image
           </button>
@@ -1193,7 +1463,7 @@ function NotesField({
     if (disabled || busy) return;
     const editor = editorRef.current;
     if (!editor) return;
-    editor.focus();
+    editor.focus({ preventScroll: true });
     if (typeof document.caretRangeFromPoint === "function") {
       const range = document.caretRangeFromPoint(e.clientX, e.clientY);
       if (range && editor.contains(range.startContainer)) {
@@ -1244,12 +1514,13 @@ function NotesField({
 }
 
 function LoginView({ saving, error, onLogin }) {
-  const [email, setEmail] = useState("agent@deskline.local");
-  const [password, setPassword] = useState("deskline123");
-
   function handleSubmit(e) {
     e.preventDefault();
-    onLogin({ email, password });
+    const data = new FormData(e.currentTarget);
+    onLogin({
+      email: String(data.get("username") || "").trim(),
+      password: String(data.get("password") || ""),
+    });
   }
 
   return (
@@ -1257,32 +1528,43 @@ function LoginView({ saving, error, onLogin }) {
       <div className="panel-head">
         <div>
           <p className="login-brand">Help Desk</p>
-          <h1>Agent sign in</h1>
-          <p className="muted">Access the help desk with your support account.</p>
+          <h1>Sign in</h1>
+          <p className="muted">Use your agent or customer contact account.</p>
         </div>
       </div>
 
       {error && <div className="banner error login-error">{error}</div>}
 
-      <form className="form" onSubmit={handleSubmit}>
-        <label>
+      <form
+        className="form"
+        method="post"
+        action="/api/auth/login"
+        autoComplete="on"
+        onSubmit={handleSubmit}
+      >
+        <label htmlFor="login-username">
           Email
           <input
             required
+            id="login-username"
+            name="username"
             type="email"
             autoComplete="username"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck="false"
+            disabled={saving}
           />
         </label>
-        <label>
+        <label htmlFor="login-password">
           Password
           <input
             required
+            id="login-password"
+            name="password"
             type="password"
             autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            disabled={saving}
           />
         </label>
         <div className="form-actions">
@@ -1291,10 +1573,6 @@ function LoginView({ saving, error, onLogin }) {
           </button>
         </div>
       </form>
-      <p className="muted login-hint">
-        Agents and customer contacts use the same sign-in. Demo agent:{" "}
-        <code>agent@deskline.local</code> / <code>deskline123</code>
-      </p>
     </section>
   );
 }
@@ -1303,7 +1581,6 @@ function AgentsView({
   agents,
   currentAgentId,
   saving,
-  onBack,
   onCreate,
   onUpdate,
   onDelete,
@@ -1372,9 +1649,6 @@ function AgentsView({
     <section className="panel">
       <div className="panel-head">
         <div>
-          <button type="button" className="back" onClick={onBack}>
-            ← All tickets
-          </button>
           <h1>Support agents</h1>
           <p className="muted">People who can sign in and work tickets.</p>
         </div>
@@ -1595,6 +1869,281 @@ function AgentsView({
   );
 }
 
+function CatalogView({
+  items,
+  saving,
+  onCreate,
+  onUpdate,
+  onDelete,
+  title,
+  description,
+  itemLabel,
+  addLabel,
+  emptyLabel,
+  namePlaceholder,
+  detailsPlaceholder,
+  withImage = false,
+  imageVariant = "company",
+}) {
+  const blank = withImage
+    ? { name: "", details: "", image: "" }
+    : { name: "", details: "" };
+  const [draft, setDraft] = useState(blank);
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(blank);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const deleteTitleId = `delete-${itemLabel.replace(/\s+/g, "-")}-title`;
+  const deleteDescId = `delete-${itemLabel.replace(/\s+/g, "-")}-desc`;
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    try {
+      await onCreate(draft);
+      setDraft(blank);
+      setShowCreate(false);
+    } catch {
+      // parent surfaces error
+    }
+  }
+
+  function startEdit(item) {
+    setEditingId(item.id);
+    setEditForm({
+      name: item.name,
+      details: item.details || "",
+      ...(withImage ? { image: item.image || "" } : {}),
+    });
+  }
+
+  async function handleUpdate(e) {
+    e.preventDefault();
+    try {
+      await onUpdate(editingId, editForm);
+      setEditingId(null);
+    } catch {
+      // parent surfaces error
+    }
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    try {
+      await onDelete(pendingDelete.id);
+      setPendingDelete(null);
+    } catch {
+      // parent surfaces error
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h1>{title}</h1>
+          <p className="muted">{description}</p>
+        </div>
+        {!showCreate && (
+          <AddPlusButton label={addLabel} onClick={() => setShowCreate(true)} />
+        )}
+      </div>
+
+      {showCreate && (
+        <form className="form agent-create" onSubmit={handleCreate}>
+          <h2 className="form-section-title">{addLabel}</h2>
+          {withImage && (
+            <ImageImportButton
+              name={draft.name}
+              image={draft.image}
+              disabled={saving}
+              variant={imageVariant}
+              allowAuto
+              onChange={(image) => setDraft((d) => ({ ...d, image }))}
+            />
+          )}
+          <label>
+            Name
+            <input
+              required
+              value={draft.name}
+              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+              placeholder={namePlaceholder}
+            />
+          </label>
+          <label>
+            Details <span className="optional">(optional)</span>
+            <textarea
+              rows={3}
+              value={draft.details}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, details: e.target.value }))
+              }
+              placeholder={detailsPlaceholder}
+            />
+          </label>
+          <div className="form-actions">
+            <CancelIconButton
+              disabled={saving}
+              onClick={() => {
+                setDraft(blank);
+                setShowCreate(false);
+              }}
+            />
+            <AddPlusButton
+              type="submit"
+              label={saving ? "Saving…" : addLabel}
+              disabled={saving}
+            />
+          </div>
+        </form>
+      )}
+
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Details</th>
+              <th>Updated</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 && (
+              <tr>
+                <td colSpan={4} className="muted">
+                  {emptyLabel}
+                </td>
+              </tr>
+            )}
+            {items.map((row) =>
+              editingId === row.id ? (
+                <tr key={row.id} className="editing">
+                  <td colSpan={4}>
+                    <form className="form inline-edit" onSubmit={handleUpdate}>
+                      {withImage && (
+                        <ImageImportButton
+                          name={editForm.name}
+                          image={editForm.image}
+                          disabled={saving}
+                          variant={imageVariant}
+                          allowAuto
+                          onChange={(image) =>
+                            setEditForm((f) => ({ ...f, image }))
+                          }
+                        />
+                      )}
+                      <label>
+                        Name
+                        <input
+                          required
+                          value={editForm.name}
+                          onChange={(e) =>
+                            setEditForm((f) => ({ ...f, name: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Details <span className="optional">(optional)</span>
+                        <textarea
+                          rows={3}
+                          value={editForm.details}
+                          onChange={(e) =>
+                            setEditForm((f) => ({
+                              ...f,
+                              details: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <div className="form-actions">
+                        <CancelIconButton onClick={() => setEditingId(null)} />
+                        <button
+                          type="submit"
+                          className="btn primary"
+                          disabled={saving}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </form>
+                  </td>
+                </tr>
+              ) : (
+                <tr key={row.id}>
+                  <td>
+                    {withImage ? (
+                      <span className="catalog-name">
+                        <PersonAvatar
+                          name={row.name}
+                          image={row.image}
+                          size="md"
+                          variant={imageVariant}
+                        />
+                        <strong>{row.name}</strong>
+                      </span>
+                    ) : (
+                      <strong>{row.name}</strong>
+                    )}
+                  </td>
+                  <td>{row.details || <span className="muted">—</span>}</td>
+                  <td className="muted">{formatDate(row.updatedAt)}</td>
+                  <td className="table-actions">
+                    <EditIconButton
+                      onClick={() => startEdit(row)}
+                      disabled={saving}
+                    />
+                    <RemoveIconButton
+                      disabled={saving}
+                      onClick={() => setPendingDelete(row)}
+                    />
+                  </td>
+                </tr>
+              )
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {pendingDelete && (
+        <div
+          className="confirm-backdrop"
+          role="presentation"
+          onClick={() => !saving && setPendingDelete(null)}
+        >
+          <div
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={deleteTitleId}
+            aria-describedby={deleteDescId}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id={deleteTitleId}>Are you sure?</h2>
+            <p id={deleteDescId}>
+              Remove {itemLabel} <strong>{pendingDelete.name}</strong>?
+            </p>
+            <div className="form-actions">
+              <CancelIconButton
+                disabled={saving}
+                onClick={() => setPendingDelete(null)}
+              />
+              <button
+                type="button"
+                className="btn danger-solid"
+                disabled={saving}
+                onClick={confirmDelete}
+              >
+                {saving ? "Removing…" : "Yes, remove"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function OpenPriorityChart({ counts, selectedPriority, onSelectPriority }) {
   const total = PRIORITIES.reduce((sum, key) => sum + (counts[key] || 0), 0);
   const max = Math.max(1, ...PRIORITIES.map((key) => counts[key] || 0));
@@ -1655,23 +2204,31 @@ function TicketList({
   onPriorityFilter,
   onQuery,
   onOpen,
+  onCreate,
 }) {
   const selectedCompanyFilter = companies.find((c) => c.id === companyFilter);
   return (
     <section className="panel">
       <div className="panel-head with-chart">
-        <div>
-          <h1>Tickets</h1>
-          <p className="muted">
-            {portalMode
-              ? portalCompanyName
-                ? `Support tickets for ${portalCompanyName}.`
-                : "Your company’s support tickets."
-              : priorityFilter
-                ? `Open ${priorityFilter} priority tickets.`
-                : "Track and resolve support requests."}
-          </p>
-        </div>
+        <h1 className="tickets-title">Tickets</h1>
+        {onCreate && (
+          <button
+            type="button"
+            className="btn primary tickets-new-btn"
+            onClick={onCreate}
+          >
+            New ticket
+          </button>
+        )}
+        <p className="muted tickets-head-copy">
+          {portalMode
+            ? portalCompanyName
+              ? `Support tickets for ${portalCompanyName}.`
+              : "Your company’s support tickets."
+            : priorityFilter
+              ? `Open ${priorityFilter} priority tickets.`
+              : "Track and resolve support requests."}
+        </p>
         <OpenPriorityChart
           counts={openByPriority}
           selectedPriority={
@@ -1775,7 +2332,6 @@ function TicketList({
 function CompaniesView({
   companies,
   saving,
-  onBack,
   onCreateCompany,
   onUpdateCompany,
   onDeleteCompany,
@@ -1960,9 +2516,6 @@ function CompaniesView({
     <section className="panel">
       <div className="panel-head">
         <div>
-          <button type="button" className="back" onClick={onBack}>
-            ← All tickets
-          </button>
           <h1>Customers</h1>
           <p className="muted">Registered companies and people who can open tickets.</p>
         </div>
@@ -2449,7 +3002,14 @@ function CompaniesView({
   );
 }
 
-function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
+function NewTicketForm({
+  companies,
+  saving,
+  onCancel,
+  onSubmit,
+  portalMode = false,
+  portalPerson = null,
+}) {
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -2467,6 +3027,7 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
   const selectedPerson = people.find((p) => p.id === form.personId);
 
   useEffect(() => {
+    if (portalMode) return;
     if (!form.companyId && companies[0]) {
       setForm((prev) => ({
         ...prev,
@@ -2474,7 +3035,7 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
         personId: companies[0].people[0]?.id ?? "",
       }));
     }
-  }, [companies, form.companyId]);
+  }, [companies, form.companyId, portalMode]);
 
   function update(field, value) {
     setForm((prev) => {
@@ -2496,6 +3057,14 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
       window.alert("Add a description before creating the ticket.");
       return;
     }
+    if (portalMode) {
+      onSubmit({
+        title: form.title,
+        description: form.description,
+        priority: form.priority,
+      });
+      return;
+    }
     onSubmit({
       title: form.title,
       description: form.description,
@@ -2510,9 +3079,15 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
       <div className="panel-head">
         <div>
           <h1>New ticket</h1>
-          <p className="muted">Assign the issue to a registered company contact.</p>
+          <p className="muted">
+            {portalMode
+              ? portalPerson?.companyName
+                ? `Open a support request for ${portalPerson.companyName}.`
+                : "Tell us what you need help with."
+              : "Assign the issue to a registered company contact."}
+          </p>
         </div>
-        <CancelIconButton onClick={onCancel} />
+        <CancelIconButton className="tooltip-below" onClick={onCancel} />
       </div>
 
       <form className="form" onSubmit={handleSubmit}>
@@ -2536,54 +3111,56 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
             disabled={saving}
           />
         </div>
-        <div className="form-row">
-          <label>
-            Company
-            <div className="contact-person-field">
-              <PersonAvatar
-                name={selectedCompany?.name}
-                image={selectedCompany?.image}
-                size="md"
-                variant="company"
-              />
-              <select
-                required
-                value={form.companyId}
-                onChange={(e) => update("companyId", e.target.value)}
-              >
-                {companies.length === 0 && <option value="">No companies</option>}
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </label>
-          <label>
-            Contact person
-            <div className="contact-person-field">
-              <PersonAvatar
-                name={selectedPerson?.name}
-                image={selectedPerson?.image}
-                size="md"
-              />
-              <select
-                required
-                value={form.personId}
-                onChange={(e) => update("personId", e.target.value)}
-                disabled={people.length === 0}
-              >
-                {people.length === 0 && <option value="">No people</option>}
-                {people.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </label>
-        </div>
+        {!portalMode && (
+          <div className="form-row">
+            <label>
+              Company
+              <div className="contact-person-field">
+                <PersonAvatar
+                  name={selectedCompany?.name}
+                  image={selectedCompany?.image}
+                  size="md"
+                  variant="company"
+                />
+                <select
+                  required
+                  value={form.companyId}
+                  onChange={(e) => update("companyId", e.target.value)}
+                >
+                  {companies.length === 0 && <option value="">No companies</option>}
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
+            <label>
+              Contact person
+              <div className="contact-person-field">
+                <PersonAvatar
+                  name={selectedPerson?.name}
+                  image={selectedPerson?.image}
+                  size="md"
+                />
+                <select
+                  required
+                  value={form.personId}
+                  onChange={(e) => update("personId", e.target.value)}
+                  disabled={people.length === 0}
+                >
+                  {people.length === 0 && <option value="">No people</option>}
+                  {people.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
+          </div>
+        )}
         <label>
           Priority
           <select
@@ -2601,7 +3178,10 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
           <button
             type="submit"
             className="btn primary"
-            disabled={saving || !form.companyId || !form.personId}
+            disabled={
+              saving ||
+              (!portalMode && (!form.companyId || !form.personId))
+            }
           >
             {saving ? "Creating…" : "Create ticket"}
           </button>
@@ -2616,15 +3196,13 @@ function TicketDetail({
   agentName,
   saving,
   readOnly = false,
-  onBack,
   onStatusChange,
   onPriorityChange,
   onComment,
 }) {
   const [body, setBody] = useState("");
+  const [showComposer, setShowComposer] = useState(false);
   const [commentFilter, setCommentFilter] = useState("");
-  const [listOverflows, setListOverflows] = useState(false);
-  const commentListRef = useRef(null);
   const comments = useMemo(
     () =>
       [...(ticket.comments ?? [])].sort(
@@ -2641,44 +3219,26 @@ function TicketDetail({
         c.body.toLowerCase().includes(needle)
     );
   }, [comments, commentFilter]);
-  const showCommentFilter =
-    comments.length > 1 &&
-    (listOverflows || Boolean(commentFilter.trim()));
+  const showCommentFilter = comments.length > 1;
 
   useEffect(() => {
     setCommentFilter("");
-    setListOverflows(false);
     setBody("");
+    setShowComposer(false);
   }, [ticket.id]);
-
-  useLayoutEffect(() => {
-    const el = commentListRef.current;
-    if (!el || commentFilter.trim()) return;
-
-    const measure = () => {
-      setListOverflows(el.scrollHeight > el.clientHeight + 1);
-    };
-
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ticket.id, comments, commentFilter, filteredComments]);
 
   function handleComment(e) {
     e.preventDefault();
     if (notesIsEmpty(body)) return;
     onComment({ body });
     setBody("");
+    setShowComposer(false);
   }
 
   return (
-    <section className="panel">
+    <section className="panel ticket-detail">
       <div className="panel-head">
         <div>
-          <button type="button" className="back" onClick={onBack}>
-            ← All tickets
-          </button>
           <h1>{ticket.title}</h1>
           <p className="muted">
             <span className="ticket-id">{ticket.id.slice(0, 8)}</span>
@@ -2727,7 +3287,7 @@ function TicketDetail({
             ) : filteredComments.length === 0 ? (
               <p className="muted">No comments match this filter.</p>
             ) : (
-              <ul className="comment-list" ref={commentListRef}>
+              <ul className="comment-list">
                 {filteredComments.map((c) => (
                   <li key={c.id} className="comment">
                     <div className="comment-meta">
@@ -2740,27 +3300,48 @@ function TicketDetail({
               </ul>
             )}
 
-            <form className="form comment-form" onSubmit={handleComment}>
-              <p className="muted comment-as">Commenting as {agentName}</p>
-              <div className="form-field">
+            {showComposer ? (
+              <form className="form comment-form" onSubmit={handleComment}>
+                <div className="form-field">
+                  <span className="comment-heading">
+                    Comment below as {agentName}
+                  </span>
+                  <NotesField
+                    required
+                    rows={4}
+                    value={body}
+                    onChange={setBody}
+                    disabled={saving}
+                    placeholder={
+                      readOnly
+                        ? "Ask a question or add more details…"
+                        : "Update the customer or note what you tried…"
+                    }
+                  />
+                </div>
+                <div className="form-actions">
+                  <CancelIconButton
+                    className="tooltip-top"
+                    disabled={saving}
+                    onClick={() => {
+                      setBody("");
+                      setShowComposer(false);
+                    }}
+                  />
+                  <button type="submit" className="btn primary" disabled={saving}>
+                    {saving ? "Posting…" : "Post comment"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                className="btn ghost comment-compose-btn"
+                onClick={() => setShowComposer(true)}
+              >
                 Add a comment
-                <NotesField
-                  required
-                  rows={3}
-                  value={body}
-                  onChange={setBody}
-                  disabled={saving}
-                  placeholder={
-                    readOnly
-                      ? "Ask a question or add more details…"
-                      : "Update the customer or note what you tried…"
-                  }
-                />
-              </div>
-              <button type="submit" className="btn primary" disabled={saving}>
-                {saving ? "Posting…" : "Post comment"}
               </button>
-            </form>
+            )}
           </div>
         </div>
 
@@ -2780,46 +3361,48 @@ function TicketDetail({
               />
             </div>
           </div>
-          <label>
-            Status
-            {readOnly ? (
-              <span className={`pill status ${ticket.status}`}>
-                {labelStatus(ticket.status)}
-              </span>
-            ) : (
-              <select
-                value={ticket.status}
-                disabled={saving}
-                onChange={(e) => onStatusChange(e.target.value)}
-              >
-                {STATUSES.filter((s) => s.value !== "all").map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            )}
-          </label>
-          <label>
-            Priority
-            {readOnly ? (
-              <span className={`pill priority ${ticket.priority}`}>
-                {ticket.priority}
-              </span>
-            ) : (
-              <select
-                value={ticket.priority}
-                disabled={saving}
-                onChange={(e) => onPriorityChange(e.target.value)}
-              >
-                {PRIORITIES.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            )}
-          </label>
+          <div className="side-fields-row">
+            <label>
+              Status
+              {readOnly ? (
+                <span className={`pill status ${ticket.status}`}>
+                  {labelStatus(ticket.status)}
+                </span>
+              ) : (
+                <select
+                  value={ticket.status}
+                  disabled={saving}
+                  onChange={(e) => onStatusChange(e.target.value)}
+                >
+                  {STATUSES.filter((s) => s.value !== "all").map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+            <label>
+              Priority
+              {readOnly ? (
+                <span className={`pill priority ${ticket.priority}`}>
+                  {ticket.priority}
+                </span>
+              ) : (
+                <select
+                  value={ticket.priority}
+                  disabled={saving}
+                  onChange={(e) => onPriorityChange(e.target.value)}
+                >
+                  {PRIORITIES.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+          </div>
           <div className="side-meta">
             <div>
               <span className="muted">Updated</span>

@@ -87,6 +87,56 @@ export function deleteAgent(id) {
   return request(`/agents/${id}`, { method: "DELETE" });
 }
 
+export function fetchManufacturers() {
+  return request("/manufacturers");
+}
+
+export function createManufacturer(payload) {
+  return request("/manufacturers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateManufacturer(id, payload) {
+  return request(`/manufacturers/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteManufacturer(id) {
+  return request(`/manufacturers/${id}`, { method: "DELETE" });
+}
+
+export function fetchAssetTypes() {
+  return request("/asset-types");
+}
+
+export function createAssetType(payload) {
+  return request("/asset-types", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateAssetType(id, payload) {
+  return request(`/asset-types/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteAssetType(id) {
+  return request(`/asset-types/${id}`, { method: "DELETE" });
+}
+
+export function fetchStockImage(query, { skip = 0 } = {}) {
+  const params = new URLSearchParams({ q: query });
+  if (skip > 0) params.set("skip", String(skip));
+  return request(`/stock-image?${params}`);
+}
+
 export function fetchCompanies() {
   return request("/companies");
 }

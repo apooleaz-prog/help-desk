@@ -161,6 +161,21 @@ const SCHEMA_SQL = `
     body TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS manufacturers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    details TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS asset_types (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    details TEXT NOT NULL DEFAULT '',
+    image TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `;
 
 function loadLegacyJson() {
@@ -495,6 +510,10 @@ function getSqlite() {
   if (!agentCols.some((col) => col.name === "phone")) {
     sqliteDb.exec(`ALTER TABLE agents ADD COLUMN phone TEXT NOT NULL DEFAULT ''`);
   }
+  const assetTypeCols = sqliteDb.prepare(`PRAGMA table_info(asset_types)`).all();
+  if (assetTypeCols.length && !assetTypeCols.some((col) => col.name === "image")) {
+    sqliteDb.exec(`ALTER TABLE asset_types ADD COLUMN image TEXT NOT NULL DEFAULT ''`);
+  }
   migrateSessionsTable(sqliteDb);
   const agentCount = sqliteDb.prepare(`SELECT COUNT(*) AS c FROM agents`).get().c;
   if (isNew || agentCount === 0) {
@@ -549,6 +568,9 @@ async function getPg() {
     `ALTER TABLE agents ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT ''`
   );
   await pgPool.query(
+    `ALTER TABLE asset_types ADD COLUMN IF NOT EXISTS image TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
     `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE CASCADE`
   );
   await pgPool.query(`ALTER TABLE sessions ALTER COLUMN agent_id DROP NOT NULL`);
@@ -580,6 +602,205 @@ async function writeDb(data) {
   if (usePostgres()) return writePgSnapshot(await getPg(), data);
   writeSqliteSnapshot(getSqlite(), data);
 }
+
+function mapNamedRecord(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    details: row.details || "",
+    ...(row.image !== undefined ? { image: row.image || "" } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function createNamedCatalog(table, { hasImage = false } = {}) {
+  const selectSqlite = hasImage
+    ? `SELECT id, name, details, image, created_at AS createdAt, updated_at AS updatedAt FROM ${table}`
+    : `SELECT id, name, details, created_at AS createdAt, updated_at AS updatedAt FROM ${table}`;
+  const selectPg = hasImage
+    ? `SELECT id, name, details, image, created_at AS "createdAt", updated_at AS "updatedAt" FROM ${table}`
+    : `SELECT id, name, details, created_at AS "createdAt", updated_at AS "updatedAt" FROM ${table}`;
+
+  return {
+    async list() {
+      await ensureReady();
+      if (usePostgres()) {
+        const { rows } = await (await getPg()).query(`${selectPg} ORDER BY name`);
+        return rows.map(mapNamedRecord);
+      }
+      return getSqlite()
+        .prepare(`${selectSqlite} ORDER BY name`)
+        .all()
+        .map(mapNamedRecord);
+    },
+    async findById(id) {
+      await ensureReady();
+      if (usePostgres()) {
+        const { rows } = await (
+          await getPg()
+        ).query(`${selectPg} WHERE id = $1`, [id]);
+        return rows[0] ? mapNamedRecord(rows[0]) : null;
+      }
+      const row = getSqlite()
+        .prepare(`${selectSqlite} WHERE id = ?`)
+        .get(id);
+      return row ? mapNamedRecord(row) : null;
+    },
+    async findByName(name) {
+      await ensureReady();
+      const normalized = name.trim().toLowerCase();
+      if (usePostgres()) {
+        const { rows } = await (
+          await getPg()
+        ).query(`${selectPg} WHERE lower(name) = $1`, [normalized]);
+        return rows[0] ? mapNamedRecord(rows[0]) : null;
+      }
+      const row = getSqlite()
+        .prepare(`${selectSqlite} WHERE lower(name) = ?`)
+        .get(normalized);
+      return row ? mapNamedRecord(row) : null;
+    },
+    async insert(record) {
+      await ensureReady();
+      if (usePostgres()) {
+        if (hasImage) {
+          await (
+            await getPg()
+          ).query(
+            `INSERT INTO ${table} (id, name, details, image, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6)`,
+            [
+              record.id,
+              record.name,
+              record.details ?? "",
+              record.image ?? "",
+              record.createdAt,
+              record.updatedAt,
+            ]
+          );
+        } else {
+          await (
+            await getPg()
+          ).query(
+            `INSERT INTO ${table} (id, name, details, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5)`,
+            [
+              record.id,
+              record.name,
+              record.details ?? "",
+              record.createdAt,
+              record.updatedAt,
+            ]
+          );
+        }
+        return record;
+      }
+      if (hasImage) {
+        getSqlite()
+          .prepare(
+            `INSERT INTO ${table} (id, name, details, image, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            record.id,
+            record.name,
+            record.details ?? "",
+            record.image ?? "",
+            record.createdAt,
+            record.updatedAt
+          );
+      } else {
+        getSqlite()
+          .prepare(
+            `INSERT INTO ${table} (id, name, details, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)`
+          )
+          .run(
+            record.id,
+            record.name,
+            record.details ?? "",
+            record.createdAt,
+            record.updatedAt
+          );
+      }
+      return record;
+    },
+    async update(id, fields) {
+      const current = await this.findById(id);
+      if (!current) return null;
+      const next = {
+        ...current,
+        ...fields,
+        updatedAt: new Date().toISOString(),
+      };
+      await ensureReady();
+      if (usePostgres()) {
+        if (hasImage) {
+          await (
+            await getPg()
+          ).query(
+            `UPDATE ${table} SET name = $1, details = $2, image = $3, updated_at = $4 WHERE id = $5`,
+            [next.name, next.details ?? "", next.image ?? "", next.updatedAt, id]
+          );
+        } else {
+          await (
+            await getPg()
+          ).query(
+            `UPDATE ${table} SET name = $1, details = $2, updated_at = $3 WHERE id = $4`,
+            [next.name, next.details ?? "", next.updatedAt, id]
+          );
+        }
+        return next;
+      }
+      if (hasImage) {
+        getSqlite()
+          .prepare(
+            `UPDATE ${table} SET name = ?, details = ?, image = ?, updated_at = ? WHERE id = ?`
+          )
+          .run(next.name, next.details ?? "", next.image ?? "", next.updatedAt, id);
+      } else {
+        getSqlite()
+          .prepare(
+            `UPDATE ${table} SET name = ?, details = ?, updated_at = ? WHERE id = ?`
+          )
+          .run(next.name, next.details ?? "", next.updatedAt, id);
+      }
+      return next;
+    },
+    async remove(id) {
+      await ensureReady();
+      if (usePostgres()) {
+        const result = await (
+          await getPg()
+        ).query(`DELETE FROM ${table} WHERE id = $1`, [id]);
+        return result.rowCount > 0;
+      }
+      const result = getSqlite()
+        .prepare(`DELETE FROM ${table} WHERE id = ?`)
+        .run(id);
+      return result.changes > 0;
+    },
+  };
+}
+
+const manufacturerCatalog = createNamedCatalog("manufacturers");
+const assetTypeCatalog = createNamedCatalog("asset_types", { hasImage: true });
+
+const listManufacturers = () => manufacturerCatalog.list();
+const findManufacturerById = (id) => manufacturerCatalog.findById(id);
+const findManufacturerByName = (name) => manufacturerCatalog.findByName(name);
+const insertManufacturer = (record) => manufacturerCatalog.insert(record);
+const updateManufacturerRecord = (id, fields) =>
+  manufacturerCatalog.update(id, fields);
+const removeManufacturer = (id) => manufacturerCatalog.remove(id);
+
+const listAssetTypes = () => assetTypeCatalog.list();
+const findAssetTypeById = (id) => assetTypeCatalog.findById(id);
+const findAssetTypeByName = (name) => assetTypeCatalog.findByName(name);
+const insertAssetType = (record) => assetTypeCatalog.insert(record);
+const updateAssetTypeRecord = (id, fields) => assetTypeCatalog.update(id, fields);
+const removeAssetType = (id) => assetTypeCatalog.remove(id);
 
 function findCompany(db, companyId) {
   return db.companies.find((c) => c.id === companyId) ?? null;
@@ -696,4 +917,16 @@ export {
   publicPortalPerson,
   publicCompany,
   enrichTicket,
+  listManufacturers,
+  findManufacturerById,
+  findManufacturerByName,
+  insertManufacturer,
+  updateManufacturerRecord,
+  removeManufacturer,
+  listAssetTypes,
+  findAssetTypeById,
+  findAssetTypeByName,
+  insertAssetType,
+  updateAssetTypeRecord,
+  removeAssetType,
 };
