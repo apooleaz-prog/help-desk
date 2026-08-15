@@ -1,4 +1,4 @@
-# Deskline Help Desk
+# Help Desk
 
 Simple help desk built with **Express** (Node.js) and **React** (Vite).
 

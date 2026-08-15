@@ -9,6 +9,7 @@ import {
   destroySessionsForAgent,
   getBearerToken,
   hashPassword,
+  requireAgent,
   requireAuth,
   verifyPassword,
 } from "./auth.js";
@@ -20,9 +21,11 @@ import {
   enrichTicket,
   findCompany,
   findPerson,
+  findPersonByEmail,
   publicAgent,
   publicCompany,
   publicPerson,
+  publicPortalPerson,
   ensureReady,
   readDb,
   writeDb,
@@ -32,10 +35,15 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
-app.use(express.json({ limit: "3mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 const PERSON_IMAGE_MAX = 2_000_000;
 const PERSON_IMAGE_RE = /^data:image\/(jpeg|jpg|png|gif|webp);base64,/i;
+const NOTES_BODY_MAX = 8_000_000;
+
+function notesBodyTooLarge(value) {
+  return typeof value === "string" && value.length > NOTES_BODY_MAX;
+}
 
 function normalizePersonImage(image) {
   if (image === undefined) return undefined;
@@ -63,15 +71,28 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   const db = await readDb();
-  const agent = db.agents.find(
-    (a) => a.email.toLowerCase() === email.trim().toLowerCase()
-  );
-  if (!agent || !verifyPassword(password, agent.passwordHash)) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const agent = db.agents.find((a) => a.email.toLowerCase() === normalizedEmail);
+
+  if (agent) {
+    if (!verifyPassword(password, agent.passwordHash)) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+    const token = await createSession({ agentId: agent.id });
+    return res.json({ token, role: "agent", agent: publicAgent(agent) });
+  }
+
+  const match = findPersonByEmail(db, normalizedEmail);
+  if (!match || !verifyPassword(password, match.person.passwordHash)) {
     return res.status(401).json({ error: "Invalid email or password" });
   }
 
-  const token = await createSession(agent.id);
-  res.json({ token, agent: publicAgent(agent) });
+  const token = await createSession({ personId: match.person.id });
+  res.json({
+    token,
+    role: "person",
+    person: publicPortalPerson(match.person, match.company),
+  });
 });
 
 app.post("/api/auth/logout", async (req, res) => {
@@ -83,7 +104,10 @@ app.post("/api/auth/logout", async (req, res) => {
 });
 
 app.get("/api/auth/me", requireAuth, async (req, res) => {
-  res.json({ agent: req.agent });
+  if (req.role === "person") {
+    return res.json({ role: "person", person: req.person });
+  }
+  res.json({ role: "agent", agent: req.agent });
 });
 
 app.use("/api", (req, res, next) => {
@@ -96,7 +120,7 @@ app.use("/api", (req, res, next) => {
   return requireAuth(req, res, next);
 });
 
-app.get("/api/agents", async (_req, res) => {
+app.get("/api/agents", requireAgent, async (_req, res) => {
   const { agents } = await readDb();
   const sorted = [...agents]
     .map(publicAgent)
@@ -104,7 +128,7 @@ app.get("/api/agents", async (_req, res) => {
   res.json(sorted);
 });
 
-app.post("/api/agents", async (req, res) => {
+app.post("/api/agents", requireAgent, async (req, res) => {
   const { name, email, phone, password } = req.body ?? {};
 
   if (!name?.trim() || !email?.trim() || !password) {
@@ -139,7 +163,7 @@ app.post("/api/agents", async (req, res) => {
   res.status(201).json(publicAgent(agent));
 });
 
-app.patch("/api/agents/:id", async (req, res) => {
+app.patch("/api/agents/:id", requireAgent, async (req, res) => {
   const db = await readDb();
   const index = db.agents.findIndex((a) => a.id === req.params.id);
   if (index === -1) {
@@ -194,7 +218,7 @@ app.patch("/api/agents/:id", async (req, res) => {
   res.json(publicAgent(agent));
 });
 
-app.delete("/api/agents/:id", async (req, res) => {
+app.delete("/api/agents/:id", requireAgent, async (req, res) => {
   const db = await readDb();
   const index = db.agents.findIndex((a) => a.id === req.params.id);
   if (index === -1) {
@@ -212,7 +236,7 @@ app.delete("/api/agents/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/companies", async (_req, res) => {
+app.get("/api/companies", requireAgent, async (_req, res) => {
   const { companies } = await readDb();
   const sorted = [...companies]
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -220,7 +244,7 @@ app.get("/api/companies", async (_req, res) => {
   res.json(sorted);
 });
 
-app.get("/api/companies/:id", async (req, res) => {
+app.get("/api/companies/:id", requireAgent, async (req, res) => {
   const company = findCompany(await readDb(), req.params.id);
   if (!company) {
     return res.status(404).json({ error: "Company not found" });
@@ -228,11 +252,15 @@ app.get("/api/companies/:id", async (req, res) => {
   res.json(publicCompany(company));
 });
 
-app.post("/api/companies", async (req, res) => {
+app.post("/api/companies", requireAgent, async (req, res) => {
   const { name, details = "", people = [], image } = req.body ?? {};
 
   if (!name?.trim()) {
     return res.status(400).json({ error: "name is required" });
+  }
+
+  if (notesBodyTooLarge(details)) {
+    return res.status(400).json({ error: "details is too large" });
   }
 
   if (!Array.isArray(people)) {
@@ -296,7 +324,7 @@ app.post("/api/companies", async (req, res) => {
   res.status(201).json(publicCompany(company));
 });
 
-app.patch("/api/companies/:id", async (req, res) => {
+app.patch("/api/companies/:id", requireAgent, async (req, res) => {
   const db = await readDb();
   const index = db.companies.findIndex((c) => c.id === req.params.id);
   if (index === -1) {
@@ -321,6 +349,9 @@ app.patch("/api/companies/:id", async (req, res) => {
   }
 
   if (details !== undefined) {
+    if (notesBodyTooLarge(details)) {
+      return res.status(400).json({ error: "details is too large" });
+    }
     company.details = String(details).trim();
   }
 
@@ -344,7 +375,7 @@ app.patch("/api/companies/:id", async (req, res) => {
   res.json(publicCompany(company));
 });
 
-app.post("/api/companies/:id/people", async (req, res) => {
+app.post("/api/companies/:id/people", requireAgent, async (req, res) => {
   const { name, email, phone, image, password } = req.body ?? {};
 
   if (!name?.trim() || !email?.trim() || !password) {
@@ -393,7 +424,7 @@ app.post("/api/companies/:id/people", async (req, res) => {
   res.status(201).json(publicPerson(person));
 });
 
-app.patch("/api/companies/:companyId/people/:personId", async (req, res) => {
+app.patch("/api/companies/:companyId/people/:personId", requireAgent, async (req, res) => {
   const { name, email, phone, image, password } = req.body ?? {};
   const db = await readDb();
   const companyIndex = db.companies.findIndex((c) => c.id === req.params.companyId);
@@ -469,7 +500,33 @@ app.patch("/api/companies/:companyId/people/:personId", async (req, res) => {
   res.json(publicPerson(person));
 });
 
-app.delete("/api/companies/:id", async (req, res) => {
+app.delete("/api/companies/:companyId/people/:personId", requireAgent, async (req, res) => {
+  const db = await readDb();
+  const companyIndex = db.companies.findIndex((c) => c.id === req.params.companyId);
+  if (companyIndex === -1) {
+    return res.status(404).json({ error: "Company not found" });
+  }
+
+  const people = db.companies[companyIndex].people;
+  const personIndex = people.findIndex((p) => p.id === req.params.personId);
+  if (personIndex === -1) {
+    return res.status(404).json({ error: "Person not found" });
+  }
+
+  const [removed] = people.splice(personIndex, 1);
+  db.companies[companyIndex].people = people;
+  db.sessions = db.sessions.filter((s) => s.personId !== removed.id);
+  const removedTickets = db.tickets.filter((t) => t.personId === removed.id);
+  db.tickets = db.tickets.filter((t) => t.personId !== removed.id);
+  await writeDb(db);
+
+  res.json({
+    ok: true,
+    deletedTickets: removedTickets.length,
+  });
+});
+
+app.delete("/api/companies/:id", requireAgent, async (req, res) => {
   const db = await readDb();
   const index = db.companies.findIndex((c) => c.id === req.params.id);
   if (index === -1) {
@@ -493,16 +550,18 @@ app.get("/api/tickets", async (req, res) => {
   const db = await readDb();
   let tickets = db.tickets.map((t) => enrichTicket(db, t));
 
+  if (req.role === "person") {
+    tickets = tickets.filter((t) => t.companyId === req.person.companyId);
+  } else if (companyId) {
+    tickets = tickets.filter((t) => t.companyId === companyId);
+  }
+
   if (status && status !== "all") {
     tickets = tickets.filter((t) => t.status === status);
   }
 
   if (priority && priority !== "all") {
     tickets = tickets.filter((t) => t.priority === priority);
-  }
-
-  if (companyId) {
-    tickets = tickets.filter((t) => t.companyId === companyId);
   }
 
   if (q) {
@@ -531,10 +590,13 @@ app.get("/api/tickets/:id", async (req, res) => {
   if (!ticket) {
     return res.status(404).json({ error: "Ticket not found" });
   }
+  if (req.role === "person" && ticket.companyId !== req.person.companyId) {
+    return res.status(404).json({ error: "Ticket not found" });
+  }
   res.json(enrichTicket(db, ticket));
 });
 
-app.post("/api/tickets", async (req, res) => {
+app.post("/api/tickets", requireAgent, async (req, res) => {
   const {
     title,
     description,
@@ -547,6 +609,10 @@ app.post("/api/tickets", async (req, res) => {
     return res.status(400).json({
       error: "title, description, companyId, and personId are required",
     });
+  }
+
+  if (notesBodyTooLarge(description)) {
+    return res.status(400).json({ error: "description is too large" });
   }
 
   if (!PRIORITIES.includes(priority)) {
@@ -588,7 +654,7 @@ app.post("/api/tickets", async (req, res) => {
   res.status(201).json(enrichTicket(db, ticket));
 });
 
-app.patch("/api/tickets/:id", async (req, res) => {
+app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
   const db = await readDb();
   const index = db.tickets.findIndex((t) => t.id === req.params.id);
   if (index === -1) {
@@ -647,19 +713,35 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
     return res.status(400).json({ error: "body is required" });
   }
 
+  if (notesBodyTooLarge(body)) {
+    return res.status(400).json({ error: "body is too large" });
+  }
+
   const db = await readDb();
   const index = db.tickets.findIndex((t) => t.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: "Ticket not found" });
   }
 
-  const comment = {
-    id: uuidv4(),
-    author: req.agent.name,
-    agentId: req.agent.id,
-    body: body.trim(),
-    createdAt: new Date().toISOString(),
-  };
+  if (req.role === "person" && db.tickets[index].companyId !== req.person.companyId) {
+    return res.status(404).json({ error: "Ticket not found" });
+  }
+
+  const comment =
+    req.role === "person"
+      ? {
+          id: uuidv4(),
+          author: req.person.name,
+          body: body.trim(),
+          createdAt: new Date().toISOString(),
+        }
+      : {
+          id: uuidv4(),
+          author: req.agent.name,
+          agentId: req.agent.id,
+          body: body.trim(),
+          createdAt: new Date().toISOString(),
+        };
 
   db.tickets[index].comments.push(comment);
   db.tickets[index].updatedAt = comment.createdAt;

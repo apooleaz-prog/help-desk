@@ -1,6 +1,13 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { findAgent, publicAgent, readDb, writeDb } from "./db.js";
+import {
+  findAgent,
+  findPersonById,
+  publicAgent,
+  publicPortalPerson,
+  readDb,
+  writeDb,
+} from "./db.js";
 
 function createToken() {
   return crypto.randomBytes(32).toString("hex");
@@ -11,6 +18,7 @@ function hashPassword(password) {
 }
 
 function verifyPassword(password, passwordHash) {
+  if (!passwordHash) return false;
   return bcrypt.compareSync(password, passwordHash);
 }
 
@@ -33,28 +41,60 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: "Invalid or expired session" });
     }
 
-    const agent = findAgent(db, session.agentId);
-    if (!agent) {
-      db.sessions = db.sessions.filter((s) => s.token !== token);
-      await writeDb(db);
-      return res.status(401).json({ error: "Invalid or expired session" });
+    if (session.agentId) {
+      const agent = findAgent(db, session.agentId);
+      if (!agent) {
+        db.sessions = db.sessions.filter((s) => s.token !== token);
+        await writeDb(db);
+        return res.status(401).json({ error: "Invalid or expired session" });
+      }
+      req.token = token;
+      req.role = "agent";
+      req.agent = publicAgent(agent);
+      req.person = null;
+      return next();
     }
 
-    req.token = token;
-    req.agent = publicAgent(agent);
-    next();
+    if (session.personId) {
+      const match = findPersonById(db, session.personId);
+      if (!match) {
+        db.sessions = db.sessions.filter((s) => s.token !== token);
+        await writeDb(db);
+        return res.status(401).json({ error: "Invalid or expired session" });
+      }
+      req.token = token;
+      req.role = "person";
+      req.agent = null;
+      req.person = publicPortalPerson(match.person, match.company);
+      return next();
+    }
+
+    db.sessions = db.sessions.filter((s) => s.token !== token);
+    await writeDb(db);
+    return res.status(401).json({ error: "Invalid or expired session" });
   } catch (err) {
     next(err);
   }
 }
 
-async function createSession(agentId) {
+function requireAgent(req, res, next) {
+  if (req.role !== "agent" || !req.agent) {
+    return res.status(403).json({ error: "Agent access required" });
+  }
+  next();
+}
+
+async function createSession({ agentId, personId } = {}) {
+  if ((!agentId && !personId) || (agentId && personId)) {
+    throw new Error("Session requires exactly one of agentId or personId");
+  }
   const db = await readDb();
   const token = createToken();
   db.sessions.push({
     token,
-    agentId,
     createdAt: new Date().toISOString(),
+    ...(agentId ? { agentId } : {}),
+    ...(personId ? { personId } : {}),
   });
   await writeDb(db);
   return token;
@@ -76,6 +116,7 @@ export {
   hashPassword,
   verifyPassword,
   requireAuth,
+  requireAgent,
   createSession,
   destroySession,
   destroySessionsForAgent,

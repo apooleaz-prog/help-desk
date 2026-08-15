@@ -9,6 +9,7 @@ import {
   createTicket,
   deleteAgent,
   deleteCompany,
+  deletePerson,
   fetchAgents,
   fetchCompanies,
   fetchMe,
@@ -49,7 +50,9 @@ function labelStatus(status) {
 }
 
 function App() {
+  const [role, setRole] = useState(null);
   const [agent, setAgent] = useState(null);
+  const [person, setPerson] = useState(null);
   const [authChecking, setAuthChecking] = useState(Boolean(getToken()));
   const [view, setView] = useState("list");
   const [tickets, setTickets] = useState([]);
@@ -70,11 +73,22 @@ function App() {
     urgent: 0,
   });
 
+  const isPerson = role === "person";
+  const isAgent = role === "agent";
+  const signedIn = Boolean(agent || person);
+  const displayUser = isPerson ? person : agent;
+
+  function clearSessionState() {
+    setRole(null);
+    setAgent(null);
+    setPerson(null);
+    setView("list");
+    setSelected(null);
+  }
+
   function handleAuthFailure(err) {
     if (err instanceof AuthError) {
-      setAgent(null);
-      setView("list");
-      setSelected(null);
+      clearSessionState();
       setError("Session expired. Please sign in again.");
       return true;
     }
@@ -89,10 +103,20 @@ function App() {
     }
 
     fetchMe()
-      .then((data) => setAgent(data.agent))
+      .then((data) => {
+        if (data.role === "person") {
+          setRole("person");
+          setPerson(data.person);
+          setAgent(null);
+        } else {
+          setRole("agent");
+          setAgent(data.agent);
+          setPerson(null);
+        }
+      })
       .catch(() => {
         clearToken();
-        setAgent(null);
+        clearSessionState();
       })
       .finally(() => setAuthChecking(false));
   }, []);
@@ -110,23 +134,26 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!agent) return;
+    if (!isAgent) return;
     loadCompanies().catch((err) => {
       if (!handleAuthFailure(err)) setError(err.message);
     });
-  }, [agent, loadCompanies]);
+  }, [isAgent, loadCompanies]);
 
   const loadTickets = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
+      const ticketQuery = {
+        status: statusFilter,
+        q: query,
+        priority: priorityFilter,
+      };
+      if (!isPerson) {
+        ticketQuery.companyId = companyFilter;
+      }
       const [data, openTickets] = await Promise.all([
-        fetchTickets({
-          status: statusFilter,
-          q: query,
-          companyId: companyFilter,
-          priority: priorityFilter,
-        }),
+        fetchTickets(ticketQuery),
         fetchTickets({ status: "open" }),
       ]);
       setTickets(data);
@@ -142,21 +169,21 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, query, companyFilter, priorityFilter]);
+  }, [statusFilter, query, companyFilter, priorityFilter, isPerson]);
 
   useEffect(() => {
-    if (agent && view === "list") {
+    if (signedIn && view === "list") {
       loadTickets();
     }
-  }, [agent, view, loadTickets]);
+  }, [signedIn, view, loadTickets]);
 
   useEffect(() => {
-    if (agent && view === "agents") {
+    if (isAgent && view === "agents") {
       loadAgents().catch((err) => {
         if (!handleAuthFailure(err)) setError(err.message);
       });
     }
-  }, [agent, view, loadAgents]);
+  }, [isAgent, view, loadAgents]);
 
   async function handleLogin({ email, password }) {
     setSaving(true);
@@ -164,8 +191,20 @@ function App() {
     try {
       const data = await login(email, password);
       setToken(data.token);
-      setAgent(data.agent);
+      if (data.role === "person") {
+        setRole("person");
+        setPerson(data.person);
+        setAgent(null);
+      } else {
+        setRole("agent");
+        setAgent(data.agent);
+        setPerson(null);
+      }
       setView("list");
+      setCompanyFilter("");
+      setPriorityFilter("");
+      setStatusFilter("all");
+      setQuery("");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -180,9 +219,7 @@ function App() {
       // clear local session regardless
     }
     clearToken();
-    setAgent(null);
-    setSelected(null);
-    setView("list");
+    clearSessionState();
     setError("");
   }
 
@@ -330,6 +367,21 @@ function App() {
     }
   }
 
+  async function handleDeletePerson(companyId, personId) {
+    setSaving(true);
+    setError("");
+    try {
+      await deletePerson(companyId, personId);
+      await loadCompanies();
+      await loadTickets();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleCreateAgent(payload) {
     setSaving(true);
     setError("");
@@ -388,7 +440,7 @@ function App() {
     );
   }
 
-  if (!agent) {
+  if (!signedIn) {
     return (
       <div className="app">
         <LoginView saving={saving} error={error} onLogin={handleLogin} />
@@ -408,14 +460,20 @@ function App() {
               setSelected(null);
             }}
           >
-            <span className="brand-mark">DL</span>
-            <span className="brand-name">Deskline</span>
+            <span className="brand-mark">HD</span>
+            <span className="brand-name">Help Desk</span>
           </button>
           <span
             className="agent-chip"
-            title={[agent.email, agent.phone].filter(Boolean).join(" · ")}
+            title={
+              isPerson
+                ? [person.email, person.phone, person.companyName]
+                    .filter(Boolean)
+                    .join(" · ")
+                : [agent.email, agent.phone].filter(Boolean).join(" · ")
+            }
           >
-            {agent.name}
+            {displayUser.name}
           </span>
         </div>
         <nav className="top-actions">
@@ -448,67 +506,71 @@ function App() {
               />
             </svg>
           </button>
-          <button
-            type="button"
-            className="btn icon ghost icon-agents"
-            onClick={() => setView("agents")}
-            aria-label="Agents"
-            data-tooltip="Agents"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                fill="#0d9488"
-                d="M4.5 10.5a7.5 7.5 0 0 1 15 0V12a2 2 0 0 1-2 2h-1.25a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 .75-.75H18a5.5 5.5 0 1 0-11 0h.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75H6.5A2 2 0 0 1 4.5 12v-1.5Z"
-              />
-              <path
-                fill="#2563eb"
-                d="M12 16.25a.75.75 0 0 1 .75.75v.5A2.75 2.75 0 0 1 10 20.25h-.5a.75.75 0 0 1 0-1.5H10a1.25 1.25 0 0 0 1.25-1.25v-.5a.75.75 0 0 1 .75-.75Z"
-              />
-              <circle cx="12" cy="12.25" r="1.35" fill="#115e59" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="btn icon ghost icon-customers"
-            onClick={() => setView("companies")}
-            aria-label="Customers"
-            data-tooltip="Customers"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                fill="#ea580c"
-                d="M3.75 21a.75.75 0 0 1-.75-.75V9.68c0-.28.12-.54.34-.71l8-6.1a.75.75 0 0 1 .92 0l8 6.1c.22.17.34.43.34.71v10.57a.75.75 0 0 1-.75.75H14.5v-5.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0-.75.75V21H3.75Z"
-              />
-              <path
-                fill="#ffedd5"
-                d="M8.25 10.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Zm-5.5 3.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Z"
-              />
-              <path fill="#c2410c" d="M10.25 21v-4.75h3.5V21h-3.5Z" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="btn icon ghost icon-new-ticket"
-            onClick={() => setView("new")}
-            aria-label="New ticket"
-            data-tooltip="New ticket"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                fill="#0f6e6a"
-                d="M4.5 5.25A1.75 1.75 0 0 1 6.25 3.5h11.5A1.75 1.75 0 0 1 19.5 5.25v13.5A1.75 1.75 0 0 1 17.75 20.5H6.25A1.75 1.75 0 0 1 4.5 18.75V5.25Z"
-              />
-              <path
-                fill="#ccfbf1"
-                d="M7.25 7.25h6.25a.75.75 0 0 1 0 1.5H7.25a.75.75 0 0 1 0-1.5Zm0 3.25h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z"
-              />
-              <circle cx="17.6" cy="17.6" r="5.2" fill="#e4572e" />
-              <path
-                fill="#fff7ed"
-                d="M16.45 14.85h2.3v2.05h2.05v2.3H18.75v2.05h-2.3V19.2h-2.05v-2.3h2.05v-2.05Z"
-              />
-            </svg>
-          </button>
+          {isAgent && (
+            <>
+              <button
+                type="button"
+                className="btn icon ghost icon-agents"
+                onClick={() => setView("agents")}
+                aria-label="Agents"
+                data-tooltip="Agents"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path
+                    fill="#0d9488"
+                    d="M4.5 10.5a7.5 7.5 0 0 1 15 0V12a2 2 0 0 1-2 2h-1.25a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 .75-.75H18a5.5 5.5 0 1 0-11 0h.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75H6.5A2 2 0 0 1 4.5 12v-1.5Z"
+                  />
+                  <path
+                    fill="#2563eb"
+                    d="M12 16.25a.75.75 0 0 1 .75.75v.5A2.75 2.75 0 0 1 10 20.25h-.5a.75.75 0 0 1 0-1.5H10a1.25 1.25 0 0 0 1.25-1.25v-.5a.75.75 0 0 1 .75-.75Z"
+                  />
+                  <circle cx="12" cy="12.25" r="1.35" fill="#115e59" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="btn icon ghost icon-customers"
+                onClick={() => setView("companies")}
+                aria-label="Customers"
+                data-tooltip="Customers"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path
+                    fill="#ea580c"
+                    d="M3.75 21a.75.75 0 0 1-.75-.75V9.68c0-.28.12-.54.34-.71l8-6.1a.75.75 0 0 1 .92 0l8 6.1c.22.17.34.43.34.71v10.57a.75.75 0 0 1-.75.75H14.5v-5.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0-.75.75V21H3.75Z"
+                  />
+                  <path
+                    fill="#ffedd5"
+                    d="M8.25 10.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Zm-5.5 3.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Z"
+                  />
+                  <path fill="#c2410c" d="M10.25 21v-4.75h3.5V21h-3.5Z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="btn icon ghost icon-new-ticket"
+                onClick={() => setView("new")}
+                aria-label="New ticket"
+                data-tooltip="New ticket"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path
+                    fill="#0f6e6a"
+                    d="M4.5 5.25A1.75 1.75 0 0 1 6.25 3.5h11.5A1.75 1.75 0 0 1 19.5 5.25v13.5A1.75 1.75 0 0 1 17.75 20.5H6.25A1.75 1.75 0 0 1 4.5 18.75V5.25Z"
+                  />
+                  <path
+                    fill="#ccfbf1"
+                    d="M7.25 7.25h6.25a.75.75 0 0 1 0 1.5H7.25a.75.75 0 0 1 0-1.5Zm0 3.25h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z"
+                  />
+                  <circle cx="17.6" cy="17.6" r="5.2" fill="#e4572e" />
+                  <path
+                    fill="#fff7ed"
+                    d="M16.45 14.85h2.3v2.05h2.05v2.3H18.75v2.05h-2.3V19.2h-2.05v-2.3h2.05v-2.05Z"
+                  />
+                </svg>
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="btn icon ghost icon-logout"
@@ -543,6 +605,8 @@ function App() {
             companyFilter={companyFilter}
             priorityFilter={priorityFilter}
             query={query}
+            portalMode={isPerson}
+            portalCompanyName={person?.companyName}
             onStatusFilter={(status) => {
               setPriorityFilter("");
               setStatusFilter(status);
@@ -562,7 +626,7 @@ function App() {
           />
         )}
 
-        {view === "companies" && (
+        {isAgent && view === "companies" && (
           <CompaniesView
             companies={companies}
             saving={saving}
@@ -572,10 +636,11 @@ function App() {
             onDeleteCompany={handleDeleteCompany}
             onAddPerson={handleAddPerson}
             onUpdatePerson={handleUpdatePerson}
+            onDeletePerson={handleDeletePerson}
           />
         )}
 
-        {view === "agents" && (
+        {isAgent && view === "agents" && (
           <AgentsView
             agents={agents}
             currentAgentId={agent.id}
@@ -587,7 +652,7 @@ function App() {
           />
         )}
 
-        {view === "new" && (
+        {isAgent && view === "new" && (
           <NewTicketForm
             companies={companies}
             saving={saving}
@@ -599,8 +664,9 @@ function App() {
         {view === "detail" && selected && (
           <TicketDetail
             ticket={selected}
-            agentName={agent.name}
+            agentName={displayUser.name}
             saving={saving}
+            readOnly={isPerson}
             onBack={() => {
               setView("list");
               setSelected(null);
@@ -783,8 +849,15 @@ function CompanyRef({ company, size = "sm", className = "" }) {
   );
 }
 
-async function readImageAsDataUrl(file) {
-  if (!file || !file.type.startsWith("image/")) {
+async function readImageAsDataUrl(file, mimeHint = "") {
+  if (!file) {
+    throw new Error("Choose a jpeg, png, gif, or webp image");
+  }
+  const type = (file.type || mimeHint || "").toLowerCase();
+  if (type && !type.startsWith("image/")) {
+    throw new Error("Choose a jpeg, png, gif, or webp image");
+  }
+  if (type && !/^image\/(jpeg|jpg|png|gif|webp)$/.test(type)) {
     throw new Error("Choose a jpeg, png, gif, or webp image");
   }
   const bitmap = await createImageBitmap(file);
@@ -798,7 +871,7 @@ async function readImageAsDataUrl(file) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
-  const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
+  const mime = type === "image/png" ? "image/png" : "image/jpeg";
   const dataUrl = canvas.toDataURL(mime, 0.85);
   if (dataUrl.length > 1_800_000) {
     throw new Error("Image is too large after resize. Try a smaller file.");
@@ -865,6 +938,311 @@ function ImageImportButton({
   );
 }
 
+function parseNotesParts(text) {
+  const source = String(text ?? "");
+  const parts = [];
+  const re = /!\[([^\]]*)\]\((data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+)\)/gi;
+  let lastIndex = 0;
+  let match;
+  while ((match = re.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: "text", value: source.slice(lastIndex, match.index) });
+    }
+    const src = match[2].replace(/\s/g, "");
+    if (/^data:image\/(jpeg|jpg|png|gif|webp);base64,/i.test(src)) {
+      parts.push({
+        type: "image",
+        alt: match[1] || "Embedded image",
+        src,
+      });
+    } else {
+      parts.push({ type: "text", value: match[0] });
+    }
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < source.length) {
+    parts.push({ type: "text", value: source.slice(lastIndex) });
+  }
+  return parts.length ? parts : [{ type: "text", value: source }];
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function isSafeNotesImageSrc(src) {
+  return /^data:image\/(jpeg|jpg|png|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(
+    String(src || "").replace(/\s/g, "")
+  );
+}
+
+function notesMarkdownToHtml(text) {
+  return parseNotesParts(text)
+    .map((part) => {
+      if (part.type === "image") {
+        return `<img src="${part.src}" alt="${escapeHtml(part.alt)}" class="notes-embed">`;
+      }
+      return escapeHtml(part.value).replace(/\n/g, "<br>");
+    })
+    .join("");
+}
+
+function notesHtmlToMarkdown(root) {
+  let out = "";
+
+  function walk(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.nodeValue ?? "";
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.tagName.toLowerCase();
+    if (tag === "img") {
+      const src = (node.getAttribute("src") || "").replace(/\s/g, "");
+      const alt = node.getAttribute("alt") || "image";
+      if (isSafeNotesImageSrc(src)) {
+        out += `![${alt}](${src})`;
+      }
+      return;
+    }
+    if (tag === "br") {
+      out += "\n";
+      return;
+    }
+    if (tag === "div" || tag === "p" || tag === "li") {
+      if (out.length && !out.endsWith("\n")) out += "\n";
+      [...node.childNodes].forEach(walk);
+      if (out.length && !out.endsWith("\n")) out += "\n";
+      return;
+    }
+    [...node.childNodes].forEach(walk);
+  }
+
+  [...root.childNodes].forEach(walk);
+  return out.replace(/\n{3,}/g, "\n\n").replace(/^\n+|\n+$/g, "");
+}
+
+function notesIsEmpty(text) {
+  const parts = parseNotesParts(text);
+  return !parts.some(
+    (part) =>
+      part.type === "image" || (part.type === "text" && part.value.trim())
+  );
+}
+
+function NotesContent({ text, className = "" }) {
+  const parts = useMemo(() => parseNotesParts(text), [text]);
+  if (!text) return null;
+  return (
+    <div className={["notes-content", className].filter(Boolean).join(" ")}>
+      {parts.map((part, i) =>
+        part.type === "image" ? (
+          <img
+            key={i}
+            src={part.src}
+            alt={part.alt}
+            className="notes-embed"
+          />
+        ) : (
+          <span key={i}>{part.value}</span>
+        )
+      )}
+    </div>
+  );
+}
+
+function NotesField({
+  value,
+  onChange,
+  rows = 3,
+  placeholder = "",
+  required = false,
+  disabled = false,
+  id,
+}) {
+  const editorRef = useRef(null);
+  const lastValueRef = useRef(value ?? "");
+  const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = editorRef.current;
+    if (!el) return;
+    const next = value ?? "";
+    if (el.dataset.ready === "1" && next === lastValueRef.current) return;
+    lastValueRef.current = next;
+    el.innerHTML = notesMarkdownToHtml(next);
+    el.dataset.ready = "1";
+  }, [value]);
+
+  function emitFromEditor() {
+    const el = editorRef.current;
+    if (!el) return;
+    const md = notesHtmlToMarkdown(el);
+    lastValueRef.current = md;
+    el.dataset.empty = notesIsEmpty(md) ? "true" : "false";
+    onChange(md);
+  }
+
+  function placeCaretAfter(node) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.setStartAfter(node);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  function insertImageAtCursor(dataUrl) {
+    const el = editorRef.current;
+    if (!el) return;
+    el.focus();
+    const img = document.createElement("img");
+    img.src = dataUrl;
+    img.alt = "image";
+    img.className = "notes-embed";
+
+    const sel = window.getSelection();
+    const range =
+      sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)
+        ? sel.getRangeAt(0)
+        : null;
+
+    if (range) {
+      range.deleteContents();
+      range.insertNode(img);
+      placeCaretAfter(img);
+    } else {
+      el.appendChild(img);
+      placeCaretAfter(img);
+    }
+    emitFromEditor();
+  }
+
+  async function importImageFile(file, mimeHint = "") {
+    if (!file || disabled) return;
+    setBusy(true);
+    try {
+      const dataUrl = await readImageAsDataUrl(file, mimeHint);
+      insertImageAtCursor(dataUrl);
+    } catch (err) {
+      window.alert(err.message || "Could not import image");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePaste(e) {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const imageItem = items.find((item) => item.type.startsWith("image/"));
+    const fileFromItem = imageItem?.getAsFile?.() ?? null;
+    const fileFromList = [...(e.clipboardData?.files ?? [])].find(
+      (f) => !f.type || f.type.startsWith("image/")
+    );
+    const file = fileFromItem || fileFromList;
+    if (file) {
+      e.preventDefault();
+      await importImageFile(file, imageItem?.type || file.type || "image/png");
+      return;
+    }
+    e.preventDefault();
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (!text) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    placeCaretAfter(node);
+    emitFromEditor();
+  }
+
+  function handleDragOver(e) {
+    if (![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault();
+    setDragging(true);
+  }
+
+  function handleDragLeave(e) {
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setDragging(false);
+  }
+
+  async function handleDrop(e) {
+    e.preventDefault();
+    setDragging(false);
+    const file = [...(e.dataTransfer?.files ?? [])].find(
+      (f) => !f.type || f.type.startsWith("image/")
+    );
+    if (!file) return;
+    await importImageFile(file, file.type || "image/png");
+  }
+
+  const empty = notesIsEmpty(value);
+  const minHeight = `${Math.max(2, rows) * 1.45 + 1.1}rem`;
+
+  function handleEditorMouseDown(e) {
+    // Nested <label> would otherwise focus the file input and steal the caret.
+    e.preventDefault();
+    if (disabled || busy) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    if (typeof document.caretRangeFromPoint === "function") {
+      const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (range && editor.contains(range.startContainer)) {
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+    } else if (typeof document.caretPositionFromPoint === "function") {
+      const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
+      if (pos?.offsetNode && editor.contains(pos.offsetNode)) {
+        const range = document.createRange();
+        range.setStart(pos.offsetNode, pos.offset);
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+    }
+  }
+
+  return (
+    <div
+      className={["notes-field", dragging ? "dragging" : ""].filter(Boolean).join(" ")}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div
+        ref={editorRef}
+        id={id}
+        className="notes-editor"
+        contentEditable={!disabled && !busy}
+        role="textbox"
+        aria-multiline="true"
+        aria-required={required || undefined}
+        aria-placeholder={placeholder}
+        data-placeholder={placeholder}
+        data-empty={empty ? "true" : "false"}
+        suppressContentEditableWarning
+        style={{ minHeight }}
+        onMouseDown={handleEditorMouseDown}
+        onInput={emitFromEditor}
+        onPaste={handlePaste}
+        onBlur={emitFromEditor}
+      />
+    </div>
+  );
+}
+
 function LoginView({ saving, error, onLogin }) {
   const [email, setEmail] = useState("agent@deskline.local");
   const [password, setPassword] = useState("deskline123");
@@ -878,7 +1256,7 @@ function LoginView({ saving, error, onLogin }) {
     <section className="panel narrow login-panel">
       <div className="panel-head">
         <div>
-          <p className="login-brand">Deskline</p>
+          <p className="login-brand">Help Desk</p>
           <h1>Agent sign in</h1>
           <p className="muted">Access the help desk with your support account.</p>
         </div>
@@ -914,7 +1292,8 @@ function LoginView({ saving, error, onLogin }) {
         </div>
       </form>
       <p className="muted login-hint">
-        Default demo login: <code>agent@deskline.local</code> / <code>deskline123</code>
+        Agents and customer contacts use the same sign-in. Demo agent:{" "}
+        <code>agent@deskline.local</code> / <code>deskline123</code>
       </p>
     </section>
   );
@@ -1269,6 +1648,8 @@ function TicketList({
   companyFilter,
   priorityFilter,
   query,
+  portalMode = false,
+  portalCompanyName = "",
   onStatusFilter,
   onCompanyFilter,
   onPriorityFilter,
@@ -1282,9 +1663,13 @@ function TicketList({
         <div>
           <h1>Tickets</h1>
           <p className="muted">
-            {priorityFilter
-              ? `Open ${priorityFilter} priority tickets.`
-              : "Track and resolve support requests."}
+            {portalMode
+              ? portalCompanyName
+                ? `Support tickets for ${portalCompanyName}.`
+                : "Your company’s support tickets."
+              : priorityFilter
+                ? `Open ${priorityFilter} priority tickets.`
+                : "Track and resolve support requests."}
           </p>
         </div>
         <OpenPriorityChart
@@ -1312,31 +1697,37 @@ function TicketList({
           ))}
         </div>
         <div className="filter-controls">
-          <label className="company-filter">
-            <span className="sr-only">Filter by company</span>
-            <PersonAvatar
-              name={selectedCompanyFilter?.name}
-              image={selectedCompanyFilter?.image}
-              size="md"
-              variant="company"
-            />
-            <select
-              value={companyFilter}
-              onChange={(e) => onCompanyFilter(e.target.value)}
-            >
-              <option value="">All companies</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          {!portalMode && (
+            <label className="company-filter">
+              <span className="sr-only">Filter by company</span>
+              <PersonAvatar
+                name={selectedCompanyFilter?.name}
+                image={selectedCompanyFilter?.image}
+                size="md"
+                variant="company"
+              />
+              <select
+                value={companyFilter}
+                onChange={(e) => onCompanyFilter(e.target.value)}
+              >
+                <option value="">All companies</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="search">
             <span className="sr-only">Search tickets</span>
             <input
               type="search"
-              placeholder="Search title, company, person…"
+              placeholder={
+                portalMode
+                  ? "Search title, person…"
+                  : "Search title, company, person…"
+              }
               value={query}
               onChange={(e) => onQuery(e.target.value)}
             />
@@ -1390,6 +1781,7 @@ function CompaniesView({
   onDeleteCompany,
   onAddPerson,
   onUpdatePerson,
+  onDeletePerson,
 }) {
   const [companyName, setCompanyName] = useState("");
   const [companyDetails, setCompanyDetails] = useState("");
@@ -1402,6 +1794,7 @@ function CompaniesView({
   const [personDrafts, setPersonDrafts] = useState({});
   const [addingPersonFor, setAddingPersonFor] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [pendingDeletePerson, setPendingDeletePerson] = useState(null);
   const [editingCompanyId, setEditingCompanyId] = useState(null);
   const [companyEdit, setCompanyEdit] = useState({ name: "", details: "", image: "" });
   const [editingPersonKey, setEditingPersonKey] = useState(null);
@@ -1534,6 +1927,20 @@ function CompaniesView({
     }
   }
 
+  async function confirmDeletePerson() {
+    if (!pendingDeletePerson) return;
+    const { companyId, person } = pendingDeletePerson;
+    try {
+      await onDeletePerson(companyId, person.id);
+      if (editingPersonKey === `${companyId}:${person.id}`) {
+        setEditingPersonKey(null);
+      }
+      setPendingDeletePerson(null);
+    } catch {
+      // Error surfaced by parent
+    }
+  }
+
   async function handleAddPerson(e, companyId) {
     e.preventDefault();
     const draft = draftFor(companyId);
@@ -1586,15 +1993,16 @@ function CompaniesView({
               placeholder="Acme Corp"
             />
           </label>
-          <label>
+          <div className="form-field">
             Details <span className="optional">(optional)</span>
-            <textarea
+            <NotesField
               rows={2}
               value={companyDetails}
-              onChange={(e) => setCompanyDetails(e.target.value)}
+              onChange={setCompanyDetails}
               placeholder="Notes, account info, preferences…"
+              disabled={saving}
             />
-          </label>
+          </div>
           <div className="form-row three">
             <label>
               First contact name <span className="optional">(optional)</span>
@@ -1686,17 +2094,18 @@ function CompaniesView({
                       }
                     />
                   </label>
-                  <label>
+                  <div className="form-field">
                     Details
-                    <textarea
+                    <NotesField
                       rows={3}
                       value={companyEdit.details}
-                      onChange={(e) =>
-                        setCompanyEdit((prev) => ({ ...prev, details: e.target.value }))
+                      onChange={(details) =>
+                        setCompanyEdit((prev) => ({ ...prev, details }))
                       }
                       placeholder="Notes, account info, preferences…"
+                      disabled={saving}
                     />
-                  </label>
+                  </div>
                   <div className="form-actions">
                     <CancelIconButton
                       disabled={saving}
@@ -1723,7 +2132,10 @@ function CompaniesView({
                         {company.people.length === 1 ? "person" : "people"}
                       </span>
                       {company.details ? (
-                        <p className="company-details">{company.details}</p>
+                        <NotesContent
+                          text={company.details}
+                          className="company-details"
+                        />
                       ) : (
                         <p className="muted company-details">No details yet.</p>
                       )}
@@ -1841,11 +2253,24 @@ function CompaniesView({
                   return (
                     <li key={person.id} className="person-row">
                       <PersonRef person={person} size="md" showEmail />
-                      <EditIconButton
-                        label="Edit person"
-                        disabled={saving}
-                        onClick={() => startEditPerson(company.id, person)}
-                      />
+                      <div className="person-row-actions">
+                        <EditIconButton
+                          label="Edit person"
+                          disabled={saving}
+                          onClick={() => startEditPerson(company.id, person)}
+                        />
+                        <RemoveIconButton
+                          label="Remove person"
+                          disabled={saving}
+                          onClick={() =>
+                            setPendingDeletePerson({
+                              companyId: company.id,
+                              companyName: company.name,
+                              person,
+                            })
+                          }
+                        />
+                      </div>
                     </li>
                   );
                 })}
@@ -1982,6 +2407,44 @@ function CompaniesView({
           </div>
         </div>
       )}
+
+      {pendingDeletePerson && (
+        <div
+          className="confirm-backdrop"
+          role="presentation"
+          onClick={() => !saving && setPendingDeletePerson(null)}
+        >
+          <div
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-person-title"
+            aria-describedby="delete-person-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="delete-person-title">Are you sure?</h2>
+            <p id="delete-person-desc">
+              Remove <strong>{pendingDeletePerson.person.name}</strong> from{" "}
+              <strong>{pendingDeletePerson.companyName}</strong>? Their login will stop
+              working, and any tickets linked to them will also be deleted.
+            </p>
+            <div className="form-actions">
+              <CancelIconButton
+                disabled={saving}
+                onClick={() => setPendingDeletePerson(null)}
+              />
+              <button
+                type="button"
+                className="btn danger-solid"
+                disabled={saving}
+                onClick={confirmDeletePerson}
+              >
+                {saving ? "Removing…" : "Yes, remove"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -2029,6 +2492,10 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
 
   function handleSubmit(e) {
     e.preventDefault();
+    if (notesIsEmpty(form.description)) {
+      window.alert("Add a description before creating the ticket.");
+      return;
+    }
     onSubmit({
       title: form.title,
       description: form.description,
@@ -2058,16 +2525,17 @@ function NewTicketForm({ companies, saving, onCancel, onSubmit }) {
             placeholder="Short summary of the issue"
           />
         </label>
-        <label>
+        <div className="form-field">
           Description
-          <textarea
+          <NotesField
             required
             rows={5}
             value={form.description}
-            onChange={(e) => update("description", e.target.value)}
+            onChange={(description) => update("description", description)}
             placeholder="What happened? Steps to reproduce, expected vs actual…"
+            disabled={saving}
           />
-        </label>
+        </div>
         <div className="form-row">
           <label>
             Company
@@ -2147,6 +2615,7 @@ function TicketDetail({
   ticket,
   agentName,
   saving,
+  readOnly = false,
   onBack,
   onStatusChange,
   onPriorityChange,
@@ -2198,7 +2667,7 @@ function TicketDetail({
 
   function handleComment(e) {
     e.preventDefault();
-    if (!body.trim()) return;
+    if (notesIsEmpty(body)) return;
     onComment({ body });
     setBody("");
   }
@@ -2223,7 +2692,7 @@ function TicketDetail({
         <div className="detail-main">
           <div className="description-block">
             <h2>Description</h2>
-            <p>{ticket.description}</p>
+            <NotesContent text={ticket.description} />
           </div>
 
           <div className="comments">
@@ -2265,7 +2734,7 @@ function TicketDetail({
                       <strong>{c.author}</strong>
                       <span className="muted">{formatDate(c.createdAt)}</span>
                     </div>
-                    <p>{c.body}</p>
+                    <NotesContent text={c.body} />
                   </li>
                 ))}
               </ul>
@@ -2273,16 +2742,21 @@ function TicketDetail({
 
             <form className="form comment-form" onSubmit={handleComment}>
               <p className="muted comment-as">Commenting as {agentName}</p>
-              <label>
+              <div className="form-field">
                 Add a comment
-                <textarea
+                <NotesField
                   required
                   rows={3}
                   value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  placeholder="Update the customer or note what you tried…"
+                  onChange={setBody}
+                  disabled={saving}
+                  placeholder={
+                    readOnly
+                      ? "Ask a question or add more details…"
+                      : "Update the customer or note what you tried…"
+                  }
                 />
-              </label>
+              </div>
               <button type="submit" className="btn primary" disabled={saving}>
                 {saving ? "Posting…" : "Post comment"}
               </button>
@@ -2298,36 +2772,53 @@ function TicketDetail({
             </div>
             <span className="muted">Contact</span>
             <div className="side-customer-person">
-              <PersonRef person={ticket.person} size="md" showEmail emailAsLink />
+              <PersonRef
+                person={ticket.person}
+                size="md"
+                showEmail
+                emailAsLink={!readOnly}
+              />
             </div>
           </div>
           <label>
             Status
-            <select
-              value={ticket.status}
-              disabled={saving}
-              onChange={(e) => onStatusChange(e.target.value)}
-            >
-              {STATUSES.filter((s) => s.value !== "all").map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
+            {readOnly ? (
+              <span className={`pill status ${ticket.status}`}>
+                {labelStatus(ticket.status)}
+              </span>
+            ) : (
+              <select
+                value={ticket.status}
+                disabled={saving}
+                onChange={(e) => onStatusChange(e.target.value)}
+              >
+                {STATUSES.filter((s) => s.value !== "all").map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            )}
           </label>
           <label>
             Priority
-            <select
-              value={ticket.priority}
-              disabled={saving}
-              onChange={(e) => onPriorityChange(e.target.value)}
-            >
-              {PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+            {readOnly ? (
+              <span className={`pill priority ${ticket.priority}`}>
+                {ticket.priority}
+              </span>
+            ) : (
+              <select
+                value={ticket.priority}
+                disabled={saving}
+                onChange={(e) => onPriorityChange(e.target.value)}
+              >
+                {PRIORITIES.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            )}
           </label>
           <div className="side-meta">
             <div>

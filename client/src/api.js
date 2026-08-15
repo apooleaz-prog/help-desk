@@ -123,6 +123,12 @@ export function updatePerson(companyId, personId, payload) {
   });
 }
 
+export function deletePerson(companyId, personId) {
+  return request(`/companies/${companyId}/people/${personId}`, {
+    method: "DELETE",
+  });
+}
+
 export function fetchTickets({
   status = "all",
   q = "",

@@ -122,7 +122,8 @@ const SCHEMA_SQL = `
   );
   CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    person_id TEXT REFERENCES people(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS companies (
@@ -247,10 +248,15 @@ function writeSqliteSnapshot(database, data) {
       }
     }
     const insertSession = database.prepare(
-      `INSERT INTO sessions (token, agent_id, created_at) VALUES (?, ?, ?)`
+      `INSERT INTO sessions (token, agent_id, person_id, created_at) VALUES (?, ?, ?, ?)`
     );
     for (const session of data.sessions ?? []) {
-      insertSession.run(session.token, session.agentId, session.createdAt);
+      insertSession.run(
+        session.token,
+        session.agentId ?? null,
+        session.personId ?? null,
+        session.createdAt
+      );
     }
     database.exec("COMMIT");
   } catch (err) {
@@ -273,8 +279,17 @@ function readSqliteSnapshot(database) {
       phone: a.phone || undefined,
     }));
   const sessions = database
-    .prepare(`SELECT token, agent_id AS agentId, created_at AS createdAt FROM sessions`)
-    .all();
+    .prepare(
+      `SELECT token, agent_id AS agentId, person_id AS personId, created_at AS createdAt
+       FROM sessions`
+    )
+    .all()
+    .map((s) => ({
+      token: s.token,
+      createdAt: s.createdAt,
+      ...(s.agentId ? { agentId: s.agentId } : {}),
+      ...(s.personId ? { personId: s.personId } : {}),
+    }));
   const companies = database
     .prepare(`SELECT id, name, details, image FROM companies ORDER BY name`)
     .all()
@@ -376,11 +391,10 @@ async function writePgSnapshot(pool, data) {
       }
     }
     for (const session of data.sessions ?? []) {
-      await client.query(`INSERT INTO sessions (token, agent_id, created_at) VALUES ($1,$2,$3)`, [
-        session.token,
-        session.agentId,
-        session.createdAt,
-      ]);
+      await client.query(
+        `INSERT INTO sessions (token, agent_id, person_id, created_at) VALUES ($1,$2,$3,$4)`,
+        [session.token, session.agentId ?? null, session.personId ?? null, session.createdAt]
+      );
     }
     await client.query("COMMIT");
   } catch (err) {
@@ -403,9 +417,15 @@ async function readPgSnapshot(pool) {
   }));
   const sessions = (
     await pool.query(
-      `SELECT token, agent_id AS "agentId", created_at AS "createdAt" FROM sessions`
+      `SELECT token, agent_id AS "agentId", person_id AS "personId", created_at AS "createdAt"
+       FROM sessions`
     )
-  ).rows;
+  ).rows.map((s) => ({
+    token: s.token,
+    createdAt: s.createdAt,
+    ...(s.agentId ? { agentId: s.agentId } : {}),
+    ...(s.personId ? { personId: s.personId } : {}),
+  }));
   const companyRows = (
     await pool.query(`SELECT id, name, details, image FROM companies ORDER BY name`)
   ).rows;
@@ -475,11 +495,35 @@ function getSqlite() {
   if (!agentCols.some((col) => col.name === "phone")) {
     sqliteDb.exec(`ALTER TABLE agents ADD COLUMN phone TEXT NOT NULL DEFAULT ''`);
   }
+  migrateSessionsTable(sqliteDb);
   const agentCount = sqliteDb.prepare(`SELECT COUNT(*) AS c FROM agents`).get().c;
   if (isNew || agentCount === 0) {
     writeSqliteSnapshot(sqliteDb, loadLegacyJson() ?? seedData());
   }
   return sqliteDb;
+}
+
+function migrateSessionsTable(database) {
+  const cols = database.prepare(`PRAGMA table_info(sessions)`).all();
+  const hasPersonId = cols.some((col) => col.name === "person_id");
+  const agentCol = cols.find((col) => col.name === "agent_id");
+  const agentNotNull = Boolean(agentCol?.notnull);
+  if (hasPersonId && !agentNotNull) return;
+
+  database.exec("PRAGMA foreign_keys = OFF;");
+  database.exec(`
+    CREATE TABLE sessions_new (
+      token TEXT PRIMARY KEY,
+      agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+      person_id TEXT REFERENCES people(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO sessions_new (token, agent_id, person_id, created_at)
+    SELECT token, agent_id, NULL, created_at FROM sessions;
+    DROP TABLE sessions;
+    ALTER TABLE sessions_new RENAME TO sessions;
+  `);
+  database.exec("PRAGMA foreign_keys = ON;");
 }
 
 async function getPg() {
@@ -504,6 +548,10 @@ async function getPg() {
   await pgPool.query(
     `ALTER TABLE agents ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT ''`
   );
+  await pgPool.query(
+    `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE CASCADE`
+  );
+  await pgPool.query(`ALTER TABLE sessions ALTER COLUMN agent_id DROP NOT NULL`);
   const { rows } = await pgPool.query(`SELECT COUNT(*)::int AS c FROM agents`);
   if (rows[0].c === 0) {
     await writePgSnapshot(pgPool, seedData());
@@ -541,6 +589,32 @@ function findPerson(company, personId) {
   return company?.people.find((p) => p.id === personId) ?? null;
 }
 
+function findPersonByEmail(db, email) {
+  const needle = String(email ?? "")
+    .trim()
+    .toLowerCase();
+  if (!needle) return null;
+  for (const company of db.companies ?? []) {
+    const person = (company.people ?? []).find(
+      (p) => p.email.toLowerCase() === needle
+    );
+    if (person) {
+      return { person, company };
+    }
+  }
+  return null;
+}
+
+function findPersonById(db, personId) {
+  for (const company of db.companies ?? []) {
+    const person = findPerson(company, personId);
+    if (person) {
+      return { person, company };
+    }
+  }
+  return null;
+}
+
 function findAgent(db, agentId) {
   return db.agents.find((a) => a.id === agentId) ?? null;
 }
@@ -553,6 +627,15 @@ function publicPerson(person) {
     email: person.email,
     ...(person.phone ? { phone: person.phone } : {}),
     ...(person.image ? { image: person.image } : {}),
+  };
+}
+
+function publicPortalPerson(person, company) {
+  return {
+    ...publicPerson(person),
+    companyId: company.id,
+    companyName: company.name,
+    ...(company.image ? { companyImage: company.image } : {}),
   };
 }
 
@@ -605,9 +688,12 @@ export {
   writeDb,
   findCompany,
   findPerson,
+  findPersonByEmail,
+  findPersonById,
   findAgent,
   publicAgent,
   publicPerson,
+  publicPortalPerson,
   publicCompany,
   enrichTicket,
 };
