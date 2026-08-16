@@ -41,6 +41,14 @@ import {
   insertAssetType,
   updateAssetTypeRecord,
   removeAssetType,
+  listCompanyAssets,
+  findAssetById,
+  findAssetByNumber,
+  insertAsset,
+  updateAssetRecord,
+  removeAsset,
+  removeAssetsForCompany,
+  removeCompany,
 } from "./db.js";
 
 const app = express();
@@ -70,6 +78,14 @@ function normalizePersonPhone(phone) {
   if (phone === undefined) return undefined;
   if (phone === null || phone === "") return "";
   return String(phone).trim();
+}
+
+function assignedPersonIdForCompany(company, personId) {
+  if (personId === undefined) return { ok: true };
+  if (personId === null || personId === "") return { ok: true, personId: "" };
+  const person = findPerson(company, personId);
+  if (!person) return { ok: false };
+  return { ok: true, personId: person.id };
 }
 
 const STOCK_UA = "HelpDesk/1.0 (asset type stock images)";
@@ -806,6 +822,162 @@ app.delete("/api/companies/:companyId/people/:personId", requireAgent, async (re
   });
 });
 
+app.get("/api/companies/:id/assets", requireAgent, async (req, res) => {
+  const company = findCompany(await readDb(), req.params.id);
+  if (!company) {
+    return res.status(404).json({ error: "Company not found" });
+  }
+  res.json(await listCompanyAssets(req.params.id));
+});
+
+app.post("/api/companies/:id/assets", requireAgent, async (req, res) => {
+  const company = findCompany(await readDb(), req.params.id);
+  if (!company) {
+    return res.status(404).json({ error: "Company not found" });
+  }
+
+  const { name, assetNumber, manufacturerId, assetTypeId, image, personId } = req.body ?? {};
+  if (!name?.trim() || !String(assetNumber ?? "").trim() || !manufacturerId || !assetTypeId) {
+    return res.status(400).json({
+      error: "name, asset number, manufacturer, and asset type are required",
+    });
+  }
+
+  const normalizedImage = normalizePersonImage(image);
+  if (normalizedImage === null) {
+    return res.status(400).json({
+      error: "image must be a jpeg, png, gif, or webp under 1.5MB",
+    });
+  }
+
+  const manufacturer = await findManufacturerById(manufacturerId);
+  if (!manufacturer) {
+    return res.status(400).json({ error: "Manufacturer not found" });
+  }
+  const assetType = await findAssetTypeById(assetTypeId);
+  if (!assetType) {
+    return res.status(400).json({ error: "Asset type not found" });
+  }
+
+  const assigned = assignedPersonIdForCompany(company, personId);
+  if (!assigned.ok) {
+    return res.status(400).json({
+      error: "Assigned person must belong to this customer",
+    });
+  }
+
+  const normalizedNumber = String(assetNumber).trim();
+  const duplicate = await findAssetByNumber(company.id, normalizedNumber);
+  if (duplicate) {
+    return res.status(409).json({
+      error: "An asset with that number already exists for this customer",
+    });
+  }
+
+  const now = new Date().toISOString();
+  const asset = await insertAsset({
+    id: uuidv4(),
+    companyId: company.id,
+    name: name.trim(),
+    assetNumber: normalizedNumber,
+    manufacturerId: manufacturer.id,
+    assetTypeId: assetType.id,
+    image: normalizedImage || "",
+    personId: assigned.personId || "",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  res.status(201).json(asset);
+});
+
+app.patch("/api/companies/:companyId/assets/:assetId", requireAgent, async (req, res) => {
+  const current = await findAssetById(req.params.companyId, req.params.assetId);
+  if (!current) {
+    return res.status(404).json({ error: "Asset not found" });
+  }
+
+  const { name, assetNumber, manufacturerId, assetTypeId, image, personId } = req.body ?? {};
+  const fields = {};
+
+  if (name !== undefined) {
+    if (!String(name).trim()) {
+      return res.status(400).json({ error: "name is required" });
+    }
+    fields.name = String(name).trim();
+  }
+
+  if (assetNumber !== undefined) {
+    if (!String(assetNumber).trim()) {
+      return res.status(400).json({ error: "asset number is required" });
+    }
+    const normalizedNumber = String(assetNumber).trim();
+    const duplicate = await findAssetByNumber(
+      req.params.companyId,
+      normalizedNumber,
+      current.id
+    );
+    if (duplicate) {
+      return res.status(409).json({
+        error: "An asset with that number already exists for this customer",
+      });
+    }
+    fields.assetNumber = normalizedNumber;
+  }
+
+  if (manufacturerId !== undefined) {
+    const manufacturer = await findManufacturerById(manufacturerId);
+    if (!manufacturer) {
+      return res.status(400).json({ error: "Manufacturer not found" });
+    }
+    fields.manufacturerId = manufacturer.id;
+  }
+
+  if (assetTypeId !== undefined) {
+    const assetType = await findAssetTypeById(assetTypeId);
+    if (!assetType) {
+      return res.status(400).json({ error: "Asset type not found" });
+    }
+    fields.assetTypeId = assetType.id;
+  }
+
+  if (image !== undefined) {
+    const normalizedImage = normalizePersonImage(image);
+    if (normalizedImage === null) {
+      return res.status(400).json({
+        error: "image must be a jpeg, png, gif, or webp under 1.5MB",
+      });
+    }
+    fields.image = normalizedImage || "";
+  }
+
+  if (personId !== undefined) {
+    const company = findCompany(await readDb(), req.params.companyId);
+    const assigned = assignedPersonIdForCompany(company, personId);
+    if (!assigned.ok) {
+      return res.status(400).json({
+        error: "Assigned person must belong to this customer",
+      });
+    }
+    fields.personId = assigned.personId || "";
+  }
+
+  const updated = await updateAssetRecord(
+    req.params.companyId,
+    req.params.assetId,
+    fields
+  );
+  res.json(updated);
+});
+
+app.delete("/api/companies/:companyId/assets/:assetId", requireAgent, async (req, res) => {
+  const removed = await removeAsset(req.params.companyId, req.params.assetId);
+  if (!removed) {
+    return res.status(404).json({ error: "Asset not found" });
+  }
+  res.json({ ok: true });
+});
+
 app.delete("/api/companies/:id", requireAgent, async (req, res) => {
   const db = await readDb();
   const index = db.companies.findIndex((c) => c.id === req.params.id);
@@ -816,6 +988,8 @@ app.delete("/api/companies/:id", requireAgent, async (req, res) => {
   const [removed] = db.companies.splice(index, 1);
   const removedTickets = db.tickets.filter((t) => t.companyId === removed.id);
   db.tickets = db.tickets.filter((t) => t.companyId !== removed.id);
+  await removeAssetsForCompany(removed.id);
+  await removeCompany(removed.id);
   await writeDb(db);
 
   res.json({

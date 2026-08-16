@@ -7,16 +7,19 @@ import {
   createAgent,
   createAssetType,
   createCompany,
+  createCompanyAsset,
   createManufacturer,
   createTicket,
   deleteAgent,
   deleteAssetType,
   deleteCompany,
+  deleteCompanyAsset,
   deleteManufacturer,
   deletePerson,
   fetchAgents,
   fetchAssetTypes,
   fetchCompanies,
+  fetchCompanyAssets,
   fetchManufacturers,
   fetchMe,
   fetchStockImage,
@@ -29,6 +32,7 @@ import {
   updateAgent,
   updateAssetType,
   updateCompany,
+  updateCompanyAsset,
   updateManufacturer,
   updatePerson,
   updateTicket,
@@ -56,6 +60,44 @@ function formatDate(iso) {
 
 function labelStatus(status) {
   return status.replace("_", " ");
+}
+
+function useCollapseMiddles(ref, deps = []) {
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+
+    const apply = () => {
+      const scopes = root.hasAttribute("data-collapse-scope")
+        ? [root]
+        : [...root.querySelectorAll("[data-collapse-scope]")];
+      if (scopes.length === 0) scopes.push(root);
+
+      for (const scope of scopes) {
+        const mids = [...scope.querySelectorAll("[data-mid]")];
+        for (const el of mids) el.classList.remove("is-mid-hidden");
+        const ranks = [
+          ...new Set(mids.map((el) => Number(el.dataset.mid) || 0)),
+        ].sort((a, b) => b - a);
+        for (const rank of ranks) {
+          if (scope.scrollWidth <= scope.clientWidth + 1) break;
+          for (const el of mids) {
+            if (Number(el.dataset.mid) === rank) {
+              el.classList.add("is-mid-hidden");
+            }
+          }
+        }
+      }
+    };
+
+    const frame = requestAnimationFrame(apply);
+    const ro = new ResizeObserver(() => apply());
+    ro.observe(root);
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+    };
+  }, deps);
 }
 
 function App() {
@@ -211,7 +253,7 @@ function App() {
   }, [isAgent, view, loadAgents]);
 
   useEffect(() => {
-    if (isAgent && view === "manufacturers") {
+    if (isAgent && (view === "manufacturers" || view === "companies")) {
       loadManufacturers().catch((err) => {
         if (!handleAuthFailure(err)) setError(err.message);
       });
@@ -219,7 +261,7 @@ function App() {
   }, [isAgent, view, loadManufacturers]);
 
   useEffect(() => {
-    if (isAgent && view === "assetTypes") {
+    if (isAgent && (view === "assetTypes" || view === "companies")) {
       loadAssetTypes().catch((err) => {
         if (!handleAuthFailure(err)) setError(err.message);
       });
@@ -421,6 +463,45 @@ function App() {
       await deletePerson(companyId, personId);
       await loadCompanies();
       await loadTickets();
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCreateCompanyAsset(companyId, payload) {
+    setSaving(true);
+    setError("");
+    try {
+      return await createCompanyAsset(companyId, payload);
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleUpdateCompanyAsset(companyId, assetId, payload) {
+    setSaving(true);
+    setError("");
+    try {
+      return await updateCompanyAsset(companyId, assetId, payload);
+    } catch (err) {
+      if (!handleAuthFailure(err)) setError(err.message);
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteCompanyAsset(companyId, assetId) {
+    setSaving(true);
+    setError("");
+    try {
+      await deleteCompanyAsset(companyId, assetId);
     } catch (err) {
       if (!handleAuthFailure(err)) setError(err.message);
       throw err;
@@ -807,6 +888,8 @@ function App() {
         {isAgent && view === "companies" && (
           <CompaniesView
             companies={companies}
+            manufacturers={manufacturers}
+            assetTypes={assetTypes}
             saving={saving}
             onCreateCompany={handleCreateCompany}
             onUpdateCompany={handleUpdateCompany}
@@ -814,6 +897,9 @@ function App() {
             onAddPerson={handleAddPerson}
             onUpdatePerson={handleUpdatePerson}
             onDeletePerson={handleDeletePerson}
+            onCreateAsset={handleCreateCompanyAsset}
+            onUpdateAsset={handleUpdateCompanyAsset}
+            onDeleteAsset={handleDeleteCompanyAsset}
           />
         )}
 
@@ -964,6 +1050,56 @@ function RemoveIconButton({
   );
 }
 
+function TallerIconButton({
+  label = "Taller",
+  onClick,
+  disabled = false,
+}) {
+  return (
+    <button
+      type="button"
+      className="btn icon-taller"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      data-tooltip={label}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path
+          fill="currentColor"
+          d="M12 5.83 15.17 9l1.41-1.41L12 3 7.41 7.59 8.83 9 12 5.83Zm0 12.34L8.83 15l-1.41 1.41L12 21l4.59-4.59L15.17 15 12 18.17Z"
+        />
+      </svg>
+    </button>
+  );
+}
+
+function AssetsIconButton({
+  label = "Assets",
+  onClick,
+  disabled = false,
+  pressed = false,
+}) {
+  return (
+    <button
+      type="button"
+      className={`btn icon-assets${pressed ? " is-open" : ""}`}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      aria-pressed={pressed}
+      data-tooltip={label}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path
+          fill="currentColor"
+          d="M4.5 7.4 12 3.75l7.5 3.65v.1L12 11.15 4.5 7.5v-.1Zm0 4.35 6.75 3.3v5.2L4.5 16.9v-5.15Zm8.25 8.5v-5.2l6.75-3.3V16.9l-6.75 3.35Z"
+        />
+      </svg>
+    </button>
+  );
+}
+
 function CancelIconButton({
   label = "Cancel",
   onClick,
@@ -1030,20 +1166,24 @@ function PersonRef({
         <span className="person-ref-name">{person.name}</span>
         {showEmail && person.email ? (
           emailAsLink ? (
-            <a className="person-email" href={`mailto:${person.email}`}>
+            <a className="person-email" href={`mailto:${person.email}`} data-mid="1">
               {person.email}
             </a>
           ) : (
-            <span className="muted person-ref-email">{person.email}</span>
+            <span className="muted person-ref-email" data-mid="1">
+              {person.email}
+            </span>
           )
         ) : null}
         {showEmail && person.phone ? (
           emailAsLink ? (
-            <a className="person-phone" href={`tel:${person.phone}`}>
+            <a className="person-phone" href={`tel:${person.phone}`} data-mid="2">
               {person.phone}
             </a>
           ) : (
-            <span className="muted person-ref-phone">{person.phone}</span>
+            <span className="muted person-ref-phone" data-mid="2">
+              {person.phone}
+            </span>
           )
         ) : null}
       </span>
@@ -1596,6 +1736,8 @@ function AgentsView({
     password: "",
   });
   const [pendingDelete, setPendingDelete] = useState(null);
+  const tableRef = useRef(null);
+  useCollapseMiddles(tableRef, [agents, editingId]);
   async function handleCreate(e) {
     e.preventDefault();
     try {
@@ -1718,13 +1860,13 @@ function AgentsView({
         </form>
       )}
 
-      <div className="table-wrap">
+      <div className="table-wrap" ref={tableRef} data-collapse-scope>
         <table className="data-table">
           <thead>
             <tr>
               <th>Name</th>
-              <th>Email</th>
-              <th>Updated</th>
+              <th data-mid="1">Email</th>
+              <th data-mid="2">Updated</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -1797,7 +1939,7 @@ function AgentsView({
                       <span className="pill you">you</span>
                     )}
                   </td>
-                  <td>
+                  <td data-mid="1">
                     <div>{row.email}</div>
                     {row.phone ? (
                       <a className="person-phone" href={`tel:${row.phone}`}>
@@ -1805,7 +1947,9 @@ function AgentsView({
                       </a>
                     ) : null}
                   </td>
-                  <td className="muted">{formatDate(row.updatedAt)}</td>
+                  <td className="muted" data-mid="2">
+                    {formatDate(row.updatedAt)}
+                  </td>
                   <td className="table-actions">
                     <EditIconButton onClick={() => startEdit(row)} disabled={saving} />
                     <RemoveIconButton
@@ -1892,6 +2036,8 @@ function CatalogView({
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(blank);
+  const tableRef = useRef(null);
+  useCollapseMiddles(tableRef, [items, editingId]);
   const [pendingDelete, setPendingDelete] = useState(null);
   const deleteTitleId = `delete-${itemLabel.replace(/\s+/g, "-")}-title`;
   const deleteDescId = `delete-${itemLabel.replace(/\s+/g, "-")}-desc`;
@@ -1998,13 +2144,13 @@ function CatalogView({
         </form>
       )}
 
-      <div className="table-wrap">
+      <div className="table-wrap" ref={tableRef} data-collapse-scope>
         <table className="data-table">
           <thead>
             <tr>
               <th>Name</th>
-              <th>Details</th>
-              <th>Updated</th>
+              <th data-mid="1">Details</th>
+              <th data-mid="2">Updated</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -2086,8 +2232,10 @@ function CatalogView({
                       <strong>{row.name}</strong>
                     )}
                   </td>
-                  <td>{row.details || <span className="muted">—</span>}</td>
-                  <td className="muted">{formatDate(row.updatedAt)}</td>
+                  <td data-mid="1">{row.details || <span className="muted">—</span>}</td>
+                  <td className="muted" data-mid="2">
+                    {formatDate(row.updatedAt)}
+                  </td>
                   <td className="table-actions">
                     <EditIconButton
                       onClick={() => startEdit(row)}
@@ -2206,6 +2354,8 @@ function TicketList({
   onOpen,
   onCreate,
 }) {
+  const listRef = useRef(null);
+  useCollapseMiddles(listRef, [tickets]);
   const selectedCompanyFilter = companies.find((c) => c.id === companyFilter);
   return (
     <section className="panel">
@@ -2297,21 +2447,27 @@ function TicketList({
       ) : tickets.length === 0 ? (
         <p className="muted pad">No tickets match this filter.</p>
       ) : (
-        <ul className="ticket-list">
+        <ul className="ticket-list" ref={listRef}>
           {tickets.map((ticket) => (
             <li key={ticket.id}>
-              <button type="button" className="ticket-row" onClick={() => onOpen(ticket.id)}>
+              <button type="button" className="ticket-row" data-collapse-scope onClick={() => onOpen(ticket.id)}>
                 <div className="ticket-row-main">
                   <div className="ticket-row-title">
                     <span className="ticket-id">{ticket.id.slice(0, 8)}</span>
                     <strong>{ticket.title}</strong>
                   </div>
                   <span className="muted ticket-row-sub">
-                    <CompanyRef company={ticket.company} size="sm" />
-                    <span className="ticket-row-sep">·</span>
-                    <PersonRef person={ticket.person} size="sm" />
-                    <span className="ticket-row-sep">·</span>
-                    <span>{formatDate(ticket.updatedAt)}</span>
+                    <span data-mid="1">
+                      <CompanyRef company={ticket.company} size="sm" />
+                    </span>
+                    <span data-mid="2">
+                      <span className="ticket-row-sep">·</span>
+                      <PersonRef person={ticket.person} size="sm" />
+                    </span>
+                    <span data-mid="3">
+                      <span className="ticket-row-sep">·</span>
+                      <span>{formatDate(ticket.updatedAt)}</span>
+                    </span>
                   </span>
                 </div>
                 <div className="ticket-row-meta">
@@ -2329,8 +2485,453 @@ function TicketList({
   );
 }
 
+function CompanyAssetsPanel({
+  company,
+  manufacturers,
+  assetTypes,
+  saving,
+  onCreate,
+  onUpdate,
+  onDelete,
+  onClose,
+}) {
+  const blank = {
+    name: "",
+    assetNumber: "",
+    manufacturerId: "",
+    assetTypeId: "",
+    image: "",
+    personId: "",
+  };
+  const companyPeople = company.people ?? [];
+  const [assets, setAssets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [draft, setDraft] = useState(blank);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(blank);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const listRef = useRef(null);
+  useCollapseMiddles(listRef, [assets, editingId]);
+
+  async function reload() {
+    const data = await fetchCompanyAssets(company.id);
+    setAssets(data);
+    return data;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchCompanyAssets(company.id)
+      .then((data) => {
+        if (!cancelled) setAssets(data);
+      })
+      .catch(() => {
+        if (!cancelled) setAssets([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [company.id]);
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    try {
+      await onCreate(company.id, draft);
+      setDraft(blank);
+      setShowCreate(false);
+      await reload();
+    } catch {
+      // parent surfaces error
+    }
+  }
+
+  function startEdit(asset) {
+    setEditingId(asset.id);
+    setEditForm({
+      name: asset.name || "",
+      assetNumber: asset.assetNumber || "",
+      manufacturerId: asset.manufacturerId,
+      assetTypeId: asset.assetTypeId,
+      image: asset.image || "",
+      personId: asset.personId || "",
+    });
+    setShowCreate(false);
+  }
+
+  async function handleUpdate(e) {
+    e.preventDefault();
+    try {
+      await onUpdate(company.id, editingId, editForm);
+      setEditingId(null);
+      await reload();
+    } catch {
+      // parent surfaces error
+    }
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    try {
+      await onDelete(company.id, pendingDelete.id);
+      setPendingDelete(null);
+      if (editingId === pendingDelete.id) setEditingId(null);
+      await reload();
+    } catch {
+      // parent surfaces error
+    }
+  }
+
+  const canAdd = manufacturers.length > 0 && assetTypes.length > 0;
+
+  return (
+    <div
+      className="company-assets-overlay"
+      role="dialog"
+      aria-label={`Assets for ${company.name}`}
+    >
+      <div className="company-assets-head">
+        <h3>Assets</h3>
+        <div className="company-assets-head-actions">
+          {!showCreate && (
+            <AddPlusButton
+              label="Add asset"
+              className="compact"
+              disabled={saving || !canAdd}
+              onClick={() => {
+                setShowCreate(true);
+                setEditingId(null);
+              }}
+            />
+          )}
+          <CancelIconButton label="Close" onClick={onClose} />
+        </div>
+      </div>
+
+      {!canAdd && (
+        <p className="muted">
+          Add manufacturers and asset types in Advanced before creating assets.
+        </p>
+      )}
+
+      {showCreate && (
+        <form className="form asset-form" onSubmit={handleCreate}>
+          <ImageImportButton
+            name={draft.name}
+            image={draft.image}
+            disabled={saving}
+            variant="asset"
+            onChange={(image) => setDraft((d) => ({ ...d, image }))}
+          />
+          <div className="form-row two">
+            <label>
+              Name
+              <input
+                required
+                value={draft.name}
+                onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                placeholder="Lobby printer"
+              />
+            </label>
+            <label>
+              Asset number
+              <input
+                required
+                value={draft.assetNumber}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, assetNumber: e.target.value }))
+                }
+                placeholder="A-1042"
+              />
+            </label>
+          </div>
+          <div className="form-row two">
+            <label>
+              Manufacturer
+              <select
+                required
+                value={draft.manufacturerId}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, manufacturerId: e.target.value }))
+                }
+              >
+                <option value="">Select manufacturer</option>
+                {manufacturers.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Asset type
+              <select
+                required
+                value={draft.assetTypeId}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, assetTypeId: e.target.value }))
+                }
+              >
+                <option value="">Select asset type</option>
+                {assetTypes.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label>
+            Assigned person <span className="optional">(optional)</span>
+            <select
+              value={draft.personId}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, personId: e.target.value }))
+              }
+            >
+              <option value="">None</option>
+              {companyPeople.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="form-actions">
+            <CancelIconButton
+              disabled={saving}
+              onClick={() => {
+                setDraft(blank);
+                setShowCreate(false);
+              }}
+            />
+            <AddPlusButton
+              type="submit"
+              label={saving ? "Saving…" : "Add asset"}
+              disabled={saving}
+              className="compact"
+            />
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <p className="muted">Loading assets…</p>
+      ) : assets.length === 0 && !showCreate ? (
+        <p className="muted">No assets yet.</p>
+      ) : (
+        <ul className="asset-list" ref={listRef}>
+          {assets.map((asset) =>
+            editingId === asset.id ? (
+              <li key={asset.id} className="asset-row editing">
+                <form className="form asset-form" onSubmit={handleUpdate}>
+                  <ImageImportButton
+                    name={editForm.name}
+                    image={editForm.image}
+                    disabled={saving}
+                    variant="asset"
+                    onChange={(image) =>
+                      setEditForm((f) => ({ ...f, image }))
+                    }
+                  />
+                  <div className="form-row two">
+                    <label>
+                      Name
+                      <input
+                        required
+                        value={editForm.name}
+                        onChange={(e) =>
+                          setEditForm((f) => ({ ...f, name: e.target.value }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Asset number
+                      <input
+                        required
+                        value={editForm.assetNumber}
+                        onChange={(e) =>
+                          setEditForm((f) => ({
+                            ...f,
+                            assetNumber: e.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row two">
+                    <label>
+                      Manufacturer
+                      <select
+                        required
+                        value={editForm.manufacturerId}
+                        onChange={(e) =>
+                          setEditForm((f) => ({
+                            ...f,
+                            manufacturerId: e.target.value,
+                          }))
+                        }
+                      >
+                        {manufacturers.map((row) => (
+                          <option key={row.id} value={row.id}>
+                            {row.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Asset type
+                      <select
+                        required
+                        value={editForm.assetTypeId}
+                        onChange={(e) =>
+                          setEditForm((f) => ({
+                            ...f,
+                            assetTypeId: e.target.value,
+                          }))
+                        }
+                      >
+                        {assetTypes.map((row) => (
+                          <option key={row.id} value={row.id}>
+                            {row.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <label>
+                    Assigned person <span className="optional">(optional)</span>
+                    <select
+                      value={editForm.personId}
+                      onChange={(e) =>
+                        setEditForm((f) => ({
+                          ...f,
+                          personId: e.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">None</option>
+                      {companyPeople.map((person) => (
+                        <option key={person.id} value={person.id}>
+                          {person.name}
+                        </option>
+                      ))}
+                      {editForm.personId &&
+                        !companyPeople.some((p) => p.id === editForm.personId) &&
+                        asset.person && (
+                          <option value={asset.person.id}>
+                            {asset.person.name}
+                          </option>
+                        )}
+                    </select>
+                  </label>
+                  <div className="form-actions">
+                    <CancelIconButton onClick={() => setEditingId(null)} />
+                    <button
+                      type="submit"
+                      className="btn primary compact"
+                      disabled={saving}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </form>
+              </li>
+            ) : (
+              <li key={asset.id} className="asset-row">
+                <PersonAvatar
+                  name={asset.name || asset.assetType?.name}
+                  image={asset.image || asset.assetType?.image}
+                  size="md"
+                  variant="asset"
+                />
+                <div className="asset-row-text" data-collapse-scope>
+                  <strong>{asset.name || asset.assetType?.name}</strong>
+                  <span className="muted asset-row-meta">
+                    {[
+                      asset.assetNumber,
+                      asset.assetType?.name,
+                      asset.manufacturer?.name,
+                      asset.person?.name,
+                    ]
+                      .filter(Boolean)
+                      .map((part, index) => (
+                        <span key={`${part}-${index}`} data-mid={index + 1}>
+                          {index > 0 ? (
+                            <span className="ticket-row-sep"> · </span>
+                          ) : null}
+                          {part}
+                        </span>
+                      ))}
+                  </span>
+                </div>
+                <div className="asset-row-actions">
+                  <EditIconButton
+                    label="Edit asset"
+                    disabled={saving}
+                    onClick={() => startEdit(asset)}
+                  />
+                  <RemoveIconButton
+                    label="Delete asset"
+                    disabled={saving}
+                    onClick={() => setPendingDelete(asset)}
+                  />
+                </div>
+              </li>
+            )
+          )}
+        </ul>
+      )}
+
+      {pendingDelete && (
+        <div
+          className="confirm-backdrop"
+          role="presentation"
+          onClick={() => !saving && setPendingDelete(null)}
+        >
+          <div
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-asset-title"
+            aria-describedby="delete-asset-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="delete-asset-title">Are you sure?</h2>
+            <p id="delete-asset-desc">
+              Remove{" "}
+              <strong>{pendingDelete.name || pendingDelete.assetType?.name}</strong>
+              {pendingDelete.assetNumber ? ` (${pendingDelete.assetNumber})` : ""}?
+            </p>
+            <div className="form-actions">
+              <CancelIconButton
+                disabled={saving}
+                onClick={() => setPendingDelete(null)}
+              />
+              <button
+                type="button"
+                className="btn danger-solid"
+                disabled={saving}
+                onClick={confirmDelete}
+              >
+                {saving ? "Removing…" : "Yes, remove"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CompaniesView({
   companies,
+  manufacturers = [],
+  assetTypes = [],
   saving,
   onCreateCompany,
   onUpdateCompany,
@@ -2338,6 +2939,9 @@ function CompaniesView({
   onAddPerson,
   onUpdatePerson,
   onDeletePerson,
+  onCreateAsset,
+  onUpdateAsset,
+  onDeleteAsset,
 }) {
   const [companyName, setCompanyName] = useState("");
   const [companyDetails, setCompanyDetails] = useState("");
@@ -2353,6 +2957,8 @@ function CompaniesView({
   const [pendingDeletePerson, setPendingDeletePerson] = useState(null);
   const [editingCompanyId, setEditingCompanyId] = useState(null);
   const [companyEdit, setCompanyEdit] = useState({ name: "", details: "", image: "" });
+  const [assetsOpenFor, setAssetsOpenFor] = useState(null);
+  const [cardGrowSteps, setCardGrowSteps] = useState({});
   const [editingPersonKey, setEditingPersonKey] = useState(null);
   const [personEdit, setPersonEdit] = useState({
     name: "",
@@ -2361,6 +2967,8 @@ function CompaniesView({
     password: "",
     image: "",
   });
+  const listRef = useRef(null);
+  useCollapseMiddles(listRef, [companies, editingPersonKey]);
 
   function draftFor(companyId) {
     return (
@@ -2392,6 +3000,7 @@ function CompaniesView({
       image: company.image || "",
     });
     setEditingPersonKey(null);
+    setAssetsOpenFor(null);
   }
 
   function startEditPerson(companyId, person) {
@@ -2618,13 +3227,25 @@ function CompaniesView({
         </form>
       )}
 
-      <ul className="company-list">
+      <ul className="company-list" ref={listRef}>
         {companies.map((company) => {
           const draft = draftFor(company.id);
           const isEditingCompany = editingCompanyId === company.id;
           const isAddingPerson = addingPersonFor === company.id;
+          const assetsOpen = assetsOpenFor === company.id;
+          const growSteps = cardGrowSteps[company.id] || 0;
           return (
-            <li key={company.id} className="company-card">
+            <li
+              key={company.id}
+              className={`company-card${assetsOpen ? " assets-open" : ""}`}
+              style={
+                growSteps
+                  ? {
+                      minHeight: `${(assetsOpen ? 20 : 10) + growSteps * 8}rem`,
+                    }
+                  : undefined
+              }
+            >
               {isEditingCompany ? (
                 <form className="form company-edit" onSubmit={handleSaveCompany}>
                   <h2 className="form-section-title">Edit company</h2>
@@ -2684,17 +3305,27 @@ function CompaniesView({
                         {company.people.length} registered{" "}
                         {company.people.length === 1 ? "person" : "people"}
                       </span>
-                      {company.details ? (
-                        <NotesContent
-                          text={company.details}
-                          className="company-details"
-                        />
-                      ) : (
-                        <p className="muted company-details">No details yet.</p>
-                      )}
                     </div>
                   </div>
                   <div className="company-card-actions">
+                    <TallerIconButton
+                      disabled={saving}
+                      onClick={() =>
+                        setCardGrowSteps((prev) => ({
+                          ...prev,
+                          [company.id]: (prev[company.id] || 0) + 1,
+                        }))
+                      }
+                    />
+                    <AssetsIconButton
+                      pressed={assetsOpen}
+                      disabled={saving}
+                      onClick={() => {
+                        setAddingPersonFor(null);
+                        setEditingPersonKey(null);
+                        setAssetsOpenFor(assetsOpen ? null : company.id);
+                      }}
+                    />
                     <EditIconButton
                       label="Edit company"
                       disabled={saving}
@@ -2709,6 +3340,29 @@ function CompaniesView({
                 </div>
               )}
 
+              <div className="company-card-body">
+                {assetsOpen && !isEditingCompany && (
+                  <CompanyAssetsPanel
+                    company={company}
+                    manufacturers={manufacturers}
+                    assetTypes={assetTypes}
+                    saving={saving}
+                    onCreate={onCreateAsset}
+                    onUpdate={onUpdateAsset}
+                    onDelete={onDeleteAsset}
+                    onClose={() => setAssetsOpenFor(null)}
+                  />
+                )}
+                {!isEditingCompany && (
+                  company.details ? (
+                    <NotesContent
+                      text={company.details}
+                      className="company-details"
+                    />
+                  ) : (
+                    <p className="muted company-details">No details yet.</p>
+                  )
+                )}
               <ul className="people-list">
                 {company.people.map((person) => {
                   const personKey = `${company.id}:${person.id}`;
@@ -2804,7 +3458,7 @@ function CompaniesView({
                   }
 
                   return (
-                    <li key={person.id} className="person-row">
+                    <li key={person.id} className="person-row" data-collapse-scope>
                       <PersonRef person={person} size="md" showEmail />
                       <div className="person-row-actions">
                         <EditIconButton
@@ -2917,6 +3571,7 @@ function CompaniesView({
                   </div>
                 )
               )}
+              </div>
             </li>
           );
         })}

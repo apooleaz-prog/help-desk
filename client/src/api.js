@@ -179,6 +179,30 @@ export function deletePerson(companyId, personId) {
   });
 }
 
+export function fetchCompanyAssets(companyId) {
+  return request(`/companies/${companyId}/assets`);
+}
+
+export function createCompanyAsset(companyId, payload) {
+  return request(`/companies/${companyId}/assets`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateCompanyAsset(companyId, assetId, payload) {
+  return request(`/companies/${companyId}/assets/${assetId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteCompanyAsset(companyId, assetId) {
+  return request(`/companies/${companyId}/assets/${assetId}`, {
+    method: "DELETE",
+  });
+}
+
 export function fetchTickets({
   status = "all",
   q = "",

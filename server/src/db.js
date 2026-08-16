@@ -176,6 +176,18 @@ const SCHEMA_SQL = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS assets (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    manufacturer_id TEXT NOT NULL REFERENCES manufacturers(id),
+    asset_type_id TEXT NOT NULL REFERENCES asset_types(id),
+    name TEXT NOT NULL DEFAULT '',
+    asset_number TEXT NOT NULL DEFAULT '',
+    image TEXT NOT NULL DEFAULT '',
+    person_id TEXT REFERENCES people(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `;
 
 function loadLegacyJson() {
@@ -199,13 +211,50 @@ function usePostgres() {
   return Boolean(DATABASE_URL);
 }
 
+const ASSET_SNAPSHOT_SQL = `id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, created_at, updated_at`;
+
+function assetSnapshotValues(asset) {
+  return [
+    asset.id,
+    asset.company_id,
+    asset.manufacturer_id,
+    asset.asset_type_id,
+    asset.name ?? "",
+    asset.asset_number ?? "",
+    asset.image ?? "",
+    asset.person_id || null,
+    asset.created_at,
+    asset.updated_at,
+  ];
+}
+
+function companySnapshotValues(company) {
+  return [
+    company.id,
+    company.name,
+    company.details ?? "",
+    company.image ?? "",
+  ];
+}
+
+function snapshotCompanyIds(data) {
+  return [...new Set((data.companies ?? []).map((company) => company.id).filter(Boolean))];
+}
+
 function writeSqliteSnapshot(database, data) {
   database.exec("PRAGMA foreign_keys = OFF;");
   database.exec("BEGIN IMMEDIATE");
   try {
+    const savedAssets = database
+      .prepare(`SELECT ${ASSET_SNAPSHOT_SQL} FROM assets`)
+      .all();
+    const savedCompanies = database
+      .prepare(`SELECT id, name, details, image FROM companies`)
+      .all();
     database.exec(`
       DELETE FROM comments; DELETE FROM tickets; DELETE FROM people;
-      DELETE FROM sessions; DELETE FROM companies; DELETE FROM agents;
+      DELETE FROM sessions; DELETE FROM agents;
+      DELETE FROM assets;
     `);
     const insertAgent = database.prepare(
       `INSERT INTO agents (id, name, email, phone, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -221,19 +270,27 @@ function writeSqliteSnapshot(database, data) {
         agent.updatedAt
       );
     }
-    const insertCompany = database.prepare(
-      `INSERT INTO companies (id, name, details, image) VALUES (?, ?, ?, ?)`
+    const upsertCompany = database.prepare(
+      `INSERT INTO companies (id, name, details, image) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         details = excluded.details,
+         image = excluded.image`
     );
     const insertPerson = database.prepare(
       `INSERT INTO people (id, company_id, name, email, phone, image, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const company of data.companies ?? []) {
-      insertCompany.run(
-        company.id,
-        company.name,
-        company.details ?? "",
-        company.image ?? ""
-      );
+    const incomingCompanies = data.companies ?? [];
+    const incomingCompanyIds = new Set(snapshotCompanyIds(data));
+    for (const company of incomingCompanies) {
+      upsertCompany.run(...companySnapshotValues(company));
+    }
+    for (const company of savedCompanies) {
+      if (incomingCompanyIds.has(company.id)) continue;
+      upsertCompany.run(...companySnapshotValues(company));
+      incomingCompanyIds.add(company.id);
+    }
+    for (const company of incomingCompanies) {
       for (const person of company.people ?? []) {
         insertPerson.run(
           person.id,
@@ -273,6 +330,25 @@ function writeSqliteSnapshot(database, data) {
         session.createdAt
       );
     }
+    const companyIds = incomingCompanyIds;
+    const insertAsset = database.prepare(
+      `INSERT INTO assets (${ASSET_SNAPSHOT_SQL}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const asset of savedAssets) {
+      if (!companyIds.has(asset.company_id)) continue;
+      insertAsset.run(...assetSnapshotValues(asset));
+    }
+    database.exec(
+      `DELETE FROM assets WHERE company_id NOT IN (SELECT id FROM companies)`
+    );
+    database.exec(
+      `UPDATE assets SET person_id = NULL
+       WHERE person_id IS NOT NULL AND person_id != ''
+         AND NOT EXISTS (
+           SELECT 1 FROM people p
+           WHERE p.id = assets.person_id AND p.company_id = assets.company_id
+         )`
+    );
     database.exec("COMMIT");
   } catch (err) {
     database.exec("ROLLBACK");
@@ -348,9 +424,16 @@ async function writePgSnapshot(pool, data) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const { rows: savedAssets } = await client.query(
+      `SELECT ${ASSET_SNAPSHOT_SQL} FROM assets`
+    );
+    const { rows: savedCompanies } = await client.query(
+      `SELECT id, name, details, image FROM companies`
+    );
     await client.query(`
       DELETE FROM comments; DELETE FROM tickets; DELETE FROM people;
-      DELETE FROM sessions; DELETE FROM companies; DELETE FROM agents;
+      DELETE FROM sessions; DELETE FROM agents;
+      DELETE FROM assets;
     `);
     for (const agent of data.agents ?? []) {
       await client.query(
@@ -367,11 +450,31 @@ async function writePgSnapshot(pool, data) {
         ]
       );
     }
-    for (const company of data.companies ?? []) {
+    const incomingCompanies = data.companies ?? [];
+    const incomingCompanyIds = new Set(snapshotCompanyIds(data));
+    for (const company of incomingCompanies) {
       await client.query(
-        `INSERT INTO companies (id, name, details, image) VALUES ($1,$2,$3,$4)`,
-        [company.id, company.name, company.details ?? "", company.image ?? ""]
+        `INSERT INTO companies (id, name, details, image) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           details = EXCLUDED.details,
+           image = EXCLUDED.image`,
+        companySnapshotValues(company)
       );
+    }
+    for (const company of savedCompanies) {
+      if (incomingCompanyIds.has(company.id)) continue;
+      await client.query(
+        `INSERT INTO companies (id, name, details, image) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           details = EXCLUDED.details,
+           image = EXCLUDED.image`,
+        companySnapshotValues(company)
+      );
+      incomingCompanyIds.add(company.id);
+    }
+    for (const company of incomingCompanies) {
       for (const person of company.people ?? []) {
         await client.query(
           `INSERT INTO people (id, company_id, name, email, phone, image, password_hash)
@@ -411,6 +514,26 @@ async function writePgSnapshot(pool, data) {
         [session.token, session.agentId ?? null, session.personId ?? null, session.createdAt]
       );
     }
+    const companyIds = incomingCompanyIds;
+    for (const asset of savedAssets) {
+      if (!companyIds.has(asset.company_id)) continue;
+      await client.query(
+        `INSERT INTO assets (${ASSET_SNAPSHOT_SQL})
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        assetSnapshotValues(asset)
+      );
+    }
+    await client.query(
+      `DELETE FROM assets WHERE company_id NOT IN (SELECT id FROM companies)`
+    );
+    await client.query(
+      `UPDATE assets SET person_id = NULL
+       WHERE person_id IS NOT NULL AND person_id != ''
+         AND NOT EXISTS (
+           SELECT 1 FROM people p
+           WHERE p.id = assets.person_id AND p.company_id = assets.company_id
+         )`
+    );
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK");
@@ -514,6 +637,19 @@ function getSqlite() {
   if (assetTypeCols.length && !assetTypeCols.some((col) => col.name === "image")) {
     sqliteDb.exec(`ALTER TABLE asset_types ADD COLUMN image TEXT NOT NULL DEFAULT ''`);
   }
+  const assetCols = sqliteDb.prepare(`PRAGMA table_info(assets)`).all();
+  if (assetCols.length && !assetCols.some((col) => col.name === "name")) {
+    sqliteDb.exec(`ALTER TABLE assets ADD COLUMN name TEXT NOT NULL DEFAULT ''`);
+  }
+  if (assetCols.length && !assetCols.some((col) => col.name === "asset_number")) {
+    sqliteDb.exec(`ALTER TABLE assets ADD COLUMN asset_number TEXT NOT NULL DEFAULT ''`);
+  }
+  if (assetCols.length && !assetCols.some((col) => col.name === "image")) {
+    sqliteDb.exec(`ALTER TABLE assets ADD COLUMN image TEXT NOT NULL DEFAULT ''`);
+  }
+  if (assetCols.length && !assetCols.some((col) => col.name === "person_id")) {
+    sqliteDb.exec(`ALTER TABLE assets ADD COLUMN person_id TEXT REFERENCES people(id)`);
+  }
   migrateSessionsTable(sqliteDb);
   const agentCount = sqliteDb.prepare(`SELECT COUNT(*) AS c FROM agents`).get().c;
   if (isNew || agentCount === 0) {
@@ -569,6 +705,18 @@ async function getPg() {
   );
   await pgPool.query(
     `ALTER TABLE asset_types ADD COLUMN IF NOT EXISTS image TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE assets ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE assets ADD COLUMN IF NOT EXISTS asset_number TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE assets ADD COLUMN IF NOT EXISTS image TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE assets ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE SET NULL`
   );
   await pgPool.query(
     `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE CASCADE`
@@ -802,6 +950,254 @@ const insertAssetType = (record) => assetTypeCatalog.insert(record);
 const updateAssetTypeRecord = (id, fields) => assetTypeCatalog.update(id, fields);
 const removeAssetType = (id) => assetTypeCatalog.remove(id);
 
+function mapAsset(row) {
+  const personId = row.personId || "";
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    name: row.name || "",
+    assetNumber: row.assetNumber || "",
+    image: row.image || "",
+    personId,
+    manufacturerId: row.manufacturerId,
+    assetTypeId: row.assetTypeId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    manufacturer: {
+      id: row.manufacturerId,
+      name: row.manufacturerName || "Unknown manufacturer",
+    },
+    assetType: {
+      id: row.assetTypeId,
+      name: row.assetTypeName || "Unknown type",
+      ...(row.assetTypeImage ? { image: row.assetTypeImage } : {}),
+    },
+    person: personId
+      ? {
+          id: personId,
+          name: row.personName || "Unknown person",
+          ...(row.personImage ? { image: row.personImage } : {}),
+        }
+      : null,
+  };
+}
+
+const ASSET_SELECT_SQLITE = `
+  SELECT a.id, a.company_id AS companyId, a.name, a.asset_number AS assetNumber, a.image,
+         a.person_id AS personId, a.manufacturer_id AS manufacturerId, a.asset_type_id AS assetTypeId,
+         a.created_at AS createdAt, a.updated_at AS updatedAt,
+         m.name AS manufacturerName, t.name AS assetTypeName, t.image AS assetTypeImage,
+         p.name AS personName, p.image AS personImage
+  FROM assets a
+  LEFT JOIN manufacturers m ON m.id = a.manufacturer_id
+  LEFT JOIN asset_types t ON t.id = a.asset_type_id
+  LEFT JOIN people p ON p.id = a.person_id
+`;
+
+const ASSET_SELECT_PG = `
+  SELECT a.id, a.company_id AS "companyId", a.name, a.asset_number AS "assetNumber", a.image,
+         a.person_id AS "personId", a.manufacturer_id AS "manufacturerId", a.asset_type_id AS "assetTypeId",
+         a.created_at AS "createdAt", a.updated_at AS "updatedAt",
+         m.name AS "manufacturerName", t.name AS "assetTypeName", t.image AS "assetTypeImage",
+         p.name AS "personName", p.image AS "personImage"
+  FROM assets a
+  LEFT JOIN manufacturers m ON m.id = a.manufacturer_id
+  LEFT JOIN asset_types t ON t.id = a.asset_type_id
+  LEFT JOIN people p ON p.id = a.person_id
+`;
+
+async function listCompanyAssets(companyId) {
+  await ensureReady();
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(`${ASSET_SELECT_PG} WHERE a.company_id = $1 ORDER BY a.name, a.asset_number`, [
+      companyId,
+    ]);
+    return rows.map(mapAsset);
+  }
+  return getSqlite()
+    .prepare(`${ASSET_SELECT_SQLITE} WHERE a.company_id = ? ORDER BY a.name, a.asset_number`)
+    .all(companyId)
+    .map(mapAsset);
+}
+
+async function findAssetById(companyId, assetId) {
+  await ensureReady();
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(`${ASSET_SELECT_PG} WHERE a.company_id = $1 AND a.id = $2`, [
+      companyId,
+      assetId,
+    ]);
+    return rows[0] ? mapAsset(rows[0]) : null;
+  }
+  const row = getSqlite()
+    .prepare(`${ASSET_SELECT_SQLITE} WHERE a.company_id = ? AND a.id = ?`)
+    .get(companyId, assetId);
+  return row ? mapAsset(row) : null;
+}
+
+async function findAssetByNumber(companyId, assetNumber, exceptId = "") {
+  const needle = String(assetNumber ?? "").trim().toLowerCase();
+  if (!needle) return null;
+  await ensureReady();
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(
+      `${ASSET_SELECT_PG} WHERE a.company_id = $1 AND lower(a.asset_number) = $2 AND a.id <> $3`,
+      [companyId, needle, exceptId]
+    );
+    return rows[0] ? mapAsset(rows[0]) : null;
+  }
+  const row = getSqlite()
+    .prepare(
+      `${ASSET_SELECT_SQLITE} WHERE a.company_id = ? AND lower(a.asset_number) = ? AND a.id <> ?`
+    )
+    .get(companyId, needle, exceptId);
+  return row ? mapAsset(row) : null;
+}
+
+async function insertAsset(asset) {
+  await ensureReady();
+  if (usePostgres()) {
+    await (
+      await getPg()
+    ).query(
+      `INSERT INTO assets (id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        asset.id,
+        asset.companyId,
+        asset.manufacturerId,
+        asset.assetTypeId,
+        asset.name ?? "",
+        asset.assetNumber ?? "",
+        asset.image ?? "",
+        asset.personId || null,
+        asset.createdAt,
+        asset.updatedAt,
+      ]
+    );
+    return findAssetById(asset.companyId, asset.id);
+  }
+  getSqlite()
+    .prepare(
+      `INSERT INTO assets (id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      asset.id,
+      asset.companyId,
+      asset.manufacturerId,
+      asset.assetTypeId,
+      asset.name ?? "",
+      asset.assetNumber ?? "",
+      asset.image ?? "",
+      asset.personId || null,
+      asset.createdAt,
+      asset.updatedAt
+    );
+  return findAssetById(asset.companyId, asset.id);
+}
+
+async function updateAssetRecord(companyId, assetId, fields) {
+  const current = await findAssetById(companyId, assetId);
+  if (!current) return null;
+  const next = {
+    name: fields.name ?? current.name,
+    assetNumber: fields.assetNumber ?? current.assetNumber,
+    image: fields.image !== undefined ? fields.image : current.image,
+    personId:
+      fields.personId !== undefined ? fields.personId || "" : current.personId || "",
+    manufacturerId: fields.manufacturerId ?? current.manufacturerId,
+    assetTypeId: fields.assetTypeId ?? current.assetTypeId,
+    updatedAt: new Date().toISOString(),
+  };
+  await ensureReady();
+  if (usePostgres()) {
+    await (
+      await getPg()
+    ).query(
+      `UPDATE assets SET name = $1, asset_number = $2, image = $3, person_id = $4, manufacturer_id = $5, asset_type_id = $6, updated_at = $7
+       WHERE company_id = $8 AND id = $9`,
+      [
+        next.name ?? "",
+        next.assetNumber ?? "",
+        next.image ?? "",
+        next.personId || null,
+        next.manufacturerId,
+        next.assetTypeId,
+        next.updatedAt,
+        companyId,
+        assetId,
+      ]
+    );
+    return findAssetById(companyId, assetId);
+  }
+  getSqlite()
+    .prepare(
+      `UPDATE assets SET name = ?, asset_number = ?, image = ?, person_id = ?, manufacturer_id = ?, asset_type_id = ?, updated_at = ?
+       WHERE company_id = ? AND id = ?`
+    )
+    .run(
+      next.name ?? "",
+      next.assetNumber ?? "",
+      next.image ?? "",
+      next.personId || null,
+      next.manufacturerId,
+      next.assetTypeId,
+      next.updatedAt,
+      companyId,
+      assetId
+    );
+  return findAssetById(companyId, assetId);
+}
+
+async function removeAsset(companyId, assetId) {
+  await ensureReady();
+  if (usePostgres()) {
+    const result = await (
+      await getPg()
+    ).query(`DELETE FROM assets WHERE company_id = $1 AND id = $2`, [
+      companyId,
+      assetId,
+    ]);
+    return result.rowCount > 0;
+  }
+  const result = getSqlite()
+    .prepare(`DELETE FROM assets WHERE company_id = ? AND id = ?`)
+    .run(companyId, assetId);
+  return result.changes > 0;
+}
+
+async function removeAssetsForCompany(companyId) {
+  await ensureReady();
+  if (usePostgres()) {
+    await (await getPg()).query(`DELETE FROM assets WHERE company_id = $1`, [
+      companyId,
+    ]);
+    return;
+  }
+  getSqlite().prepare(`DELETE FROM assets WHERE company_id = ?`).run(companyId);
+}
+
+async function removeCompany(companyId) {
+  await ensureReady();
+  if (usePostgres()) {
+    const result = await (
+      await getPg()
+    ).query(`DELETE FROM companies WHERE id = $1`, [companyId]);
+    return result.rowCount > 0;
+  }
+  const result = getSqlite()
+    .prepare(`DELETE FROM companies WHERE id = ?`)
+    .run(companyId);
+  return result.changes > 0;
+}
+
 function findCompany(db, companyId) {
   return db.companies.find((c) => c.id === companyId) ?? null;
 }
@@ -929,4 +1325,12 @@ export {
   insertAssetType,
   updateAssetTypeRecord,
   removeAssetType,
+  listCompanyAssets,
+  findAssetById,
+  findAssetByNumber,
+  insertAsset,
+  updateAssetRecord,
+  removeAsset,
+  removeAssetsForCompany,
+  removeCompany,
 };
