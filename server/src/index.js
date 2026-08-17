@@ -89,6 +89,76 @@ function assignedPersonIdForCompany(company, personId) {
 }
 
 const STOCK_UA = "HelpDesk/1.0 (asset type stock images)";
+const UPDATE_KINDS = ["comment", "call", "close"];
+const PERSON_UPDATE_KINDS = ["comment", "close"];
+
+function normalizeUpdateKind(kind, role) {
+  const value = String(kind ?? "comment").trim().toLowerCase() || "comment";
+  const allowed = role === "person" ? PERSON_UPDATE_KINDS : UPDATE_KINDS;
+  if (!allowed.includes(value)) return null;
+  return value;
+}
+
+const STATUS_LABELS = {
+  open: "Open",
+  in_progress: "In progress",
+  resolved: "Resolved",
+  closed: "Closed",
+};
+
+const PRIORITY_LABELS = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  urgent: "Urgent",
+};
+
+function labelTicketStatus(status) {
+  return STATUS_LABELS[status] || String(status).replaceAll("_", " ");
+}
+
+function labelTicketPriority(priority) {
+  return PRIORITY_LABELS[priority] || String(priority);
+}
+
+function fieldChangeComment(agent, kind, body) {
+  return {
+    id: uuidv4(),
+    author: agent.name,
+    agentId: agent.id,
+    kind,
+    body,
+    customerVisible: false,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function parseExternalNames(value) {
+  if (Array.isArray(value)) {
+    return value.map((name) => String(name).trim()).filter(Boolean);
+  }
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+function callParticipantsForTicket(ticket, company, payload) {
+  const personIds = Array.isArray(payload?.personIds)
+    ? [...new Set(payload.personIds.map(String).filter(Boolean))]
+    : [];
+  const peopleById = new Map((company?.people ?? []).map((person) => [person.id, person]));
+  const people = personIds
+    .map((id) => peopleById.get(id))
+    .filter(Boolean)
+    .map((person) => ({ id: person.id, name: person.name }));
+  return {
+    personIds: people.map((person) => person.id),
+    people,
+    externalNames: parseExternalNames(payload?.externalNames),
+  };
+}
 
 async function fetchJsonUrl(url) {
   const res = await fetch(url, {
@@ -1002,7 +1072,7 @@ app.delete("/api/companies/:id", requireAgent, async (req, res) => {
 app.get("/api/tickets", async (req, res) => {
   const { status, q, companyId, priority } = req.query;
   const db = await readDb();
-  let tickets = db.tickets.map((t) => enrichTicket(db, t));
+  let tickets = db.tickets.map((t) => enrichTicket(db, t, req.role));
 
   if (req.role === "person") {
     tickets = tickets.filter((t) => t.companyId === req.person.companyId);
@@ -1047,7 +1117,7 @@ app.get("/api/tickets/:id", async (req, res) => {
   if (req.role === "person" && ticket.companyId !== req.person.companyId) {
     return res.status(404).json({ error: "Ticket not found" });
   }
-  res.json(enrichTicket(db, ticket));
+  res.json(enrichTicket(db, ticket, req.role));
 });
 
 app.post("/api/tickets", async (req, res) => {
@@ -1111,7 +1181,7 @@ app.post("/api/tickets", async (req, res) => {
   db.tickets.unshift(ticket);
   await writeDb(db);
 
-  res.status(201).json(enrichTicket(db, ticket));
+  res.status(201).json(enrichTicket(db, ticket, req.role));
 });
 
 app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
@@ -1123,6 +1193,7 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
 
   const { status, priority, companyId, personId } = req.body ?? {};
   const ticket = db.tickets[index];
+  const changeComments = [];
 
   if (status !== undefined) {
     if (!STATUSES.includes(status)) {
@@ -1130,7 +1201,16 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
         .status(400)
         .json({ error: `status must be one of: ${STATUSES.join(", ")}` });
     }
-    ticket.status = status;
+    if (status !== ticket.status) {
+      changeComments.push(
+        fieldChangeComment(
+          req.agent,
+          "status",
+          `Changed the status from ${labelTicketStatus(ticket.status)} to ${labelTicketStatus(status)}`
+        )
+      );
+      ticket.status = status;
+    }
   }
 
   if (priority !== undefined) {
@@ -1139,7 +1219,16 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
         .status(400)
         .json({ error: `priority must be one of: ${PRIORITIES.join(", ")}` });
     }
-    ticket.priority = priority;
+    if (priority !== ticket.priority) {
+      changeComments.push(
+        fieldChangeComment(
+          req.agent,
+          "priority",
+          `Changed the priority from ${labelTicketPriority(ticket.priority)} to ${labelTicketPriority(priority)}`
+        )
+      );
+      ticket.priority = priority;
+    }
   }
 
   const nextCompanyId = companyId ?? ticket.companyId;
@@ -1160,15 +1249,20 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
     ticket.personId = person.id;
   }
 
-  ticket.updatedAt = new Date().toISOString();
+  if (changeComments.length) {
+    ticket.comments = [...(ticket.comments ?? []), ...changeComments];
+    ticket.updatedAt = changeComments[changeComments.length - 1].createdAt;
+  } else {
+    ticket.updatedAt = new Date().toISOString();
+  }
   db.tickets[index] = ticket;
   await writeDb(db);
 
-  res.json(enrichTicket(db, ticket));
+  res.json(enrichTicket(db, ticket, req.role));
 });
 
 app.post("/api/tickets/:id/comments", async (req, res) => {
-  const { body } = req.body ?? {};
+  const { body, kind, callParticipants, customerVisible } = req.body ?? {};
   if (!body?.trim()) {
     return res.status(400).json({ error: "body is required" });
   }
@@ -1177,37 +1271,68 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
     return res.status(400).json({ error: "body is too large" });
   }
 
+  const normalizedKind = normalizeUpdateKind(kind, req.role);
+  if (!normalizedKind) {
+    return res.status(400).json({
+      error:
+        req.role === "person"
+          ? "kind must be comment or close"
+          : "kind must be comment, call, or close",
+    });
+  }
+
   const db = await readDb();
   const index = db.tickets.findIndex((t) => t.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: "Ticket not found" });
   }
 
-  if (req.role === "person" && db.tickets[index].companyId !== req.person.companyId) {
+  const ticket = db.tickets[index];
+  if (req.role === "person" && ticket.companyId !== req.person.companyId) {
     return res.status(404).json({ error: "Ticket not found" });
   }
+
+  const company = findCompany(db, ticket.companyId);
+  const participants =
+    normalizedKind === "call"
+      ? callParticipantsForTicket(ticket, company, callParticipants)
+      : null;
+
+  const visibleToCustomer =
+    req.role === "person" ? true : customerVisible !== false;
 
   const comment =
     req.role === "person"
       ? {
           id: uuidv4(),
           author: req.person.name,
+          kind: normalizedKind,
           body: body.trim(),
+          customerVisible: true,
           createdAt: new Date().toISOString(),
         }
       : {
           id: uuidv4(),
           author: req.agent.name,
           agentId: req.agent.id,
+          kind: normalizedKind,
           body: body.trim(),
+          customerVisible: visibleToCustomer,
           createdAt: new Date().toISOString(),
+          ...(participants ? { callParticipants: participants } : {}),
         };
 
   db.tickets[index].comments.push(comment);
   db.tickets[index].updatedAt = comment.createdAt;
+  if (normalizedKind === "close") {
+    db.tickets[index].status = "closed";
+  }
   await writeDb(db);
 
-  res.status(201).json(comment);
+  res.status(201).json({
+    comment,
+    ticket: enrichTicket(db, db.tickets[index], req.role),
+  });
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

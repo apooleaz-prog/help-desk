@@ -32,6 +32,7 @@ async function request(path, options = {}) {
   }
 
   const res = await fetch(`${API}${path}`, {
+    cache: "no-store",
     ...options,
     headers,
   });

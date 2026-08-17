@@ -14,6 +14,37 @@
   padding-bottom: 3rem;
 }
 
+.login-logo {
+  display: block;
+  width: 4.9rem;
+  height: 5.7rem;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.login-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.login-head-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.1;
+}
+
+.login-head h1 {
+  margin: 0.1rem 0 0;
+}
+
+.login-panel .muted {
+  margin: 0.35rem 0 0;
+}
+
 .chrome {
   flex-shrink: 0;
   position: relative;
@@ -55,7 +86,7 @@
 
 .brand {
   display: inline-flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.55rem;
   border: 0;
   background: transparent;
@@ -64,18 +95,12 @@
   text-align: left;
 }
 
-.brand-mark {
-  width: 2rem;
-  height: 2rem;
-  display: grid;
-  place-items: center;
-  border-radius: 0.55rem;
-  background: var(--brand);
-  color: #f4fffd;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+.brand-logo {
+  width: 2.45rem;
+  height: 2.85rem;
+  object-fit: contain;
   flex-shrink: 0;
+  display: block;
 }
 
 .brand-copy {
@@ -310,11 +335,13 @@
 
 .comment-heading {
   min-width: 0;
+  flex: 1;
 }
 
 @media (max-width: 900px) {
   .form-row,
-  .form-row.three {
+  .form-row.three,
+  .call-add-row {
     grid-template-columns: 1fr;
   }
 }
@@ -1191,7 +1218,8 @@
 .form input,
 .form textarea,
 .form select,
-.detail-side select {
+.detail-side select,
+.ticket-head-fields select {
   width: 100%;
   max-width: 100%;
   min-width: 0;
@@ -1205,7 +1233,8 @@
 .form input:focus,
 .form textarea:focus,
 .form select:focus,
-.detail-side select:focus {
+.detail-side select:focus,
+.ticket-head-fields select:focus {
   outline: 2px solid color-mix(in srgb, var(--brand) 45%, white);
   border-color: var(--brand);
 }
@@ -1232,6 +1261,72 @@
   grid-template-columns: minmax(0, 1fr) 220px;
   gap: 1.25rem;
   padding: 0.5rem 1.4rem 1rem;
+}
+
+.ticket-detail .detail-main {
+  padding: 0.35rem 1.4rem 1rem;
+}
+
+.ticket-created-line {
+  margin: 0.15rem 0 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.ticket-created-line .ticket-id {
+  color: inherit;
+}
+
+.ticket-created-person {
+  display: inline-flex;
+  vertical-align: middle;
+  margin: 0 0.1rem;
+  max-width: min(100%, 16rem);
+}
+
+.ticket-created-person .person-ref-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.ticket-detail-head {
+  flex-wrap: wrap;
+}
+
+.ticket-detail-intro {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+.ticket-head-fields {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 1rem;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.ticket-head-fields label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.ticket-head-fields select {
+  width: auto;
+  min-width: 8.5rem;
+}
+
+.ticket-head-fields .pill {
+  justify-self: start;
 }
 
 .ticket-detail .comment-form {
@@ -1405,10 +1500,134 @@
 }
 
 .comment-meta {
+  display: block;
+  margin-bottom: 0.35rem;
+  line-height: 1.4;
+  font-size: 0.82rem;
+}
+
+.comment-meta strong {
+  font-weight: 600;
+}
+
+.update-internal-tag {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  background: #e8eef2;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.comment-form-actions {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.comment-form-buttons {
   display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin-left: auto;
+}
+
+.form .customer-visible-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.form .customer-visible-check input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--brand);
+  flex-shrink: 0;
+}
+
+.update-compose-head {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.45rem;
+}
+
+.update-kind-field {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.call-participants {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0 0 0.7rem;
+}
+
+.call-participants-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.call-chip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.call-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.18rem 0.35rem 0.18rem 0.55rem;
+  border-radius: 999px;
+  background: #ecfeff;
+  border: 1px solid #67e8f9;
+  color: #0e7490;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.call-chip-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.call-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.call-add-row select,
+.call-add-row input {
+  width: 100%;
+  margin: 0;
 }
 
 .comment-form {

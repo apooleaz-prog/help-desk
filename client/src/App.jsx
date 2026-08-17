@@ -48,6 +48,51 @@ const STATUSES = [
 ];
 
 const PRIORITIES = ["low", "medium", "high", "urgent"];
+const AGENT_UPDATE_KINDS = [
+  { value: "comment", label: "Comment" },
+  { value: "call", label: "Call" },
+  { value: "close", label: "Close" },
+];
+const PERSON_UPDATE_KINDS = [
+  { value: "comment", label: "Comment" },
+  { value: "close", label: "Close" },
+];
+
+function updateKindPhrase(kind) {
+  if (kind === "call") return "had a call";
+  if (kind === "close") return "closed";
+  if (kind === "status") return "changed the status";
+  if (kind === "priority") return "changed the priority";
+  return "commented";
+}
+
+function isFieldChangeUpdate(kind) {
+  return kind === "status" || kind === "priority";
+}
+
+function fieldChangePhrase(comment) {
+  const body = String(comment.body || "").trim();
+  if (body) return body.charAt(0).toLowerCase() + body.slice(1);
+  return updateKindPhrase(comment.kind);
+}
+
+function formatNameList(names) {
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+function callParticipantNames(update, people) {
+  const participants = update.callParticipants ?? {};
+  const stored = (participants.people ?? []).map((person) => person.name).filter(Boolean);
+  const fromCompany = (participants.personIds ?? [])
+    .map((id) => people.find((person) => person.id === id)?.name)
+    .filter(Boolean);
+  const companyNames = stored.length ? stored : fromCompany;
+  const external = (participants.externalNames ?? []).filter(Boolean);
+  return [...companyNames, ...external];
+}
 
 function formatDate(iso) {
   return new Date(iso).toLocaleString(undefined, {
@@ -55,6 +100,14 @@ function formatDate(iso) {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+  });
+}
+
+function formatCreatedOn(iso) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
   });
 }
 
@@ -340,13 +393,21 @@ function App() {
     }
   }
 
+  function applyTicketUpdate(updated) {
+    setSelected(updated);
+    setTickets((current) =>
+      current.map((ticket) =>
+        ticket.id === updated.id ? { ...ticket, ...updated } : ticket
+      )
+    );
+  }
+
   async function handleStatusChange(status) {
     if (!selected) return;
     setSaving(true);
     setError("");
     try {
-      const updated = await updateTicket(selected.id, { status });
-      setSelected(updated);
+      applyTicketUpdate(await updateTicket(selected.id, { status }));
     } catch (err) {
       if (!handleAuthFailure(err)) setError(err.message);
     } finally {
@@ -359,8 +420,7 @@ function App() {
     setSaving(true);
     setError("");
     try {
-      const updated = await updateTicket(selected.id, { priority });
-      setSelected(updated);
+      applyTicketUpdate(await updateTicket(selected.id, { priority }));
     } catch (err) {
       if (!handleAuthFailure(err)) setError(err.message);
     } finally {
@@ -373,9 +433,12 @@ function App() {
     setSaving(true);
     setError("");
     try {
-      await addComment(selected.id, payload);
-      const refreshed = await fetchTicket(selected.id);
-      setSelected(refreshed);
+      const created = await addComment(selected.id, payload);
+      let refreshed = created.ticket;
+      if (!refreshed?.id) {
+        refreshed = await fetchTicket(selected.id);
+      }
+      applyTicketUpdate(refreshed);
     } catch (err) {
       if (!handleAuthFailure(err)) setError(err.message);
     } finally {
@@ -674,7 +737,11 @@ function App() {
               setSelected(null);
             }}
           >
-            <span className="brand-mark">HD</span>
+            <img
+              className="brand-logo"
+              src="/five-wits-logo.png?v=2"
+              alt="Five Wits"
+            />
             <span className="brand-copy">
               <span className="brand-name">Help Desk</span>
               <span
@@ -964,6 +1031,7 @@ function App() {
         {view === "detail" && selected && (
           <TicketDetail
             ticket={selected}
+            companies={companies}
             agentName={displayUser.name}
             saving={saving}
             readOnly={isPerson}
@@ -1667,8 +1735,17 @@ function LoginView({ saving, error, onLogin }) {
     <section className="panel narrow login-panel">
       <div className="panel-head">
         <div>
-          <p className="login-brand">Help Desk</p>
-          <h1>Sign in</h1>
+          <div className="login-head">
+            <img
+              className="login-logo"
+              src="/five-wits-logo.png?v=2"
+              alt="Five Wits"
+            />
+            <div className="login-head-copy">
+              <p className="login-brand">Help Desk</p>
+              <h1>Sign in</h1>
+            </div>
+          </div>
           <p className="muted">Use your agent or customer contact account.</p>
         </div>
       </div>
@@ -2457,14 +2534,16 @@ function TicketList({
                     <strong>{ticket.title}</strong>
                   </div>
                   <span className="muted ticket-row-sub">
-                    <span data-mid="1">
-                      <CompanyRef company={ticket.company} size="sm" />
-                    </span>
-                    <span data-mid="2">
-                      <span className="ticket-row-sep">·</span>
+                    {!portalMode && (
+                      <span data-mid="1">
+                        <CompanyRef company={ticket.company} size="sm" />
+                      </span>
+                    )}
+                    <span data-mid={portalMode ? "1" : "2"}>
+                      {!portalMode && <span className="ticket-row-sep">·</span>}
                       <PersonRef person={ticket.person} size="sm" />
                     </span>
-                    <span data-mid="3">
+                    <span data-mid={portalMode ? "2" : "3"}>
                       <span className="ticket-row-sep">·</span>
                       <span>{formatDate(ticket.updatedAt)}</span>
                     </span>
@@ -3848,6 +3927,7 @@ function NewTicketForm({
 
 function TicketDetail({
   ticket,
+  companies = [],
   agentName,
   saving,
   readOnly = false,
@@ -3856,167 +3936,115 @@ function TicketDetail({
   onComment,
 }) {
   const [body, setBody] = useState("");
+  const [kind, setKind] = useState("comment");
+  const [callPersonIds, setCallPersonIds] = useState([]);
+  const [externalNames, setExternalNames] = useState([]);
+  const [externalDraft, setExternalDraft] = useState("");
   const [showComposer, setShowComposer] = useState(false);
   const [commentFilter, setCommentFilter] = useState("");
-  const comments = useMemo(
-    () =>
-      [...(ticket.comments ?? [])].sort(
-        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-      ),
-    [ticket.comments]
-  );
+  const [customerVisible, setCustomerVisible] = useState(true);
+  const updateKinds = readOnly ? PERSON_UPDATE_KINDS : AGENT_UPDATE_KINDS;
+  const companyPeople = useMemo(() => {
+    const company = companies.find((row) => row.id === ticket.companyId);
+    return company?.people ?? [];
+  }, [companies, ticket.companyId]);
+  const comments = useMemo(() => {
+    const rows = [...(ticket.comments ?? [])].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+    if (!readOnly) return rows;
+    return rows.filter((comment) => comment.customerVisible !== false);
+  }, [ticket.comments, readOnly]);
   const filteredComments = useMemo(() => {
     const needle = commentFilter.trim().toLowerCase();
     if (!needle) return comments;
-    return comments.filter(
-      (c) =>
+    return comments.filter((c) => {
+      const names = callParticipantNames(c, companyPeople).join(" ");
+      return (
         c.author.toLowerCase().includes(needle) ||
+        (c.kind || "comment").toLowerCase().includes(needle) ||
+        names.toLowerCase().includes(needle) ||
         c.body.toLowerCase().includes(needle)
-    );
-  }, [comments, commentFilter]);
+      );
+    });
+  }, [comments, commentFilter, companyPeople]);
   const showCommentFilter = comments.length > 1;
+
+  function resetComposer() {
+    setBody("");
+    setKind("comment");
+    setCustomerVisible(true);
+    setCallPersonIds(ticket.personId ? [ticket.personId] : []);
+    setExternalNames([]);
+    setExternalDraft("");
+    setShowComposer(false);
+  }
 
   useEffect(() => {
     setCommentFilter("");
-    setBody("");
-    setShowComposer(false);
+    resetComposer();
   }, [ticket.id]);
 
   function handleComment(e) {
     e.preventDefault();
     if (notesIsEmpty(body)) return;
-    onComment({ body });
-    setBody("");
-    setShowComposer(false);
+    onComment({
+      body,
+      kind,
+      ...(readOnly ? {} : { customerVisible }),
+      ...(kind === "call"
+        ? {
+            callParticipants: {
+              personIds: callPersonIds,
+              externalNames,
+            },
+          }
+        : {}),
+    });
+    resetComposer();
+  }
+
+  function addCallPerson(personId) {
+    if (!personId || callPersonIds.includes(personId)) return;
+    setCallPersonIds((current) => [...current, personId]);
+  }
+
+  function removeCallPerson(personId) {
+    setCallPersonIds((current) => current.filter((id) => id !== personId));
+  }
+
+  function addExternalName(raw = externalDraft) {
+    const name = String(raw).trim();
+    if (!name) return;
+    const exists = externalNames.some(
+      (entry) => entry.toLowerCase() === name.toLowerCase()
+    );
+    if (!exists) setExternalNames((current) => [...current, name]);
+    setExternalDraft("");
+  }
+
+  function removeExternalName(name) {
+    setExternalNames((current) => current.filter((entry) => entry !== name));
   }
 
   return (
     <section className="panel ticket-detail">
-      <div className="panel-head">
-        <div>
+      <div className="panel-head ticket-detail-head">
+        <div className="ticket-detail-intro">
           <h1>{ticket.title}</h1>
-          <p className="muted">
-            <span className="ticket-id">{ticket.id.slice(0, 8)}</span>
-            {" · "}
-            opened {formatDate(ticket.createdAt)}
+          <p className="ticket-created-line">
+            Ticket <span className="ticket-id">{ticket.id.slice(0, 8)}</span>
+            {" was created by "}
+            <PersonRef
+              person={ticket.person}
+              size="sm"
+              className="ticket-created-person"
+            />
+            {" on "}
+            {formatCreatedOn(ticket.createdAt)}
           </p>
         </div>
-      </div>
-
-      <div className="detail-grid">
-        <div className="detail-main">
-          <div className="description-block">
-            <h2>Description</h2>
-            <NotesContent text={ticket.description} />
-          </div>
-
-          <div className="comments">
-            <h2>
-              Comments ({filteredComments.length}
-              {commentFilter.trim() ? ` of ${comments.length}` : ""})
-            </h2>
-            {showCommentFilter && (
-              <div className="comment-filter">
-                <label className="comment-filter-field">
-                  <span className="sr-only">Filter comments</span>
-                  <input
-                    type="search"
-                    value={commentFilter}
-                    onChange={(e) => setCommentFilter(e.target.value)}
-                    placeholder="Filter comments…"
-                  />
-                </label>
-                {commentFilter && (
-                  <button
-                    type="button"
-                    className="btn ghost compact"
-                    onClick={() => setCommentFilter("")}
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            )}
-            {comments.length === 0 ? (
-              <p className="muted">No comments yet.</p>
-            ) : filteredComments.length === 0 ? (
-              <p className="muted">No comments match this filter.</p>
-            ) : (
-              <ul className="comment-list">
-                {filteredComments.map((c) => (
-                  <li key={c.id} className="comment">
-                    <div className="comment-meta">
-                      <strong>{c.author}</strong>
-                      <span className="muted">{formatDate(c.createdAt)}</span>
-                    </div>
-                    <NotesContent text={c.body} />
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {showComposer ? (
-              <form className="form comment-form" onSubmit={handleComment}>
-                <div className="form-field">
-                  <span className="comment-heading">
-                    Comment below as {agentName}
-                  </span>
-                  <NotesField
-                    required
-                    rows={4}
-                    value={body}
-                    onChange={setBody}
-                    disabled={saving}
-                    placeholder={
-                      readOnly
-                        ? "Ask a question or add more details…"
-                        : "Update the customer or note what you tried…"
-                    }
-                  />
-                </div>
-                <div className="form-actions">
-                  <CancelIconButton
-                    className="tooltip-top"
-                    disabled={saving}
-                    onClick={() => {
-                      setBody("");
-                      setShowComposer(false);
-                    }}
-                  />
-                  <button type="submit" className="btn primary" disabled={saving}>
-                    {saving ? "Posting…" : "Post comment"}
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <button
-                type="button"
-                className="btn ghost comment-compose-btn"
-                onClick={() => setShowComposer(true)}
-              >
-                Add a comment
-              </button>
-            )}
-          </div>
-        </div>
-
-        <aside className="detail-side">
-          <div className="side-customer">
-            <span className="muted">Company</span>
-            <div className="side-customer-person">
-              <CompanyRef company={ticket.company} size="md" />
-            </div>
-            <span className="muted">Contact</span>
-            <div className="side-customer-person">
-              <PersonRef
-                person={ticket.person}
-                size="md"
-                showEmail
-                emailAsLink={!readOnly}
-              />
-            </div>
-          </div>
-          <div className="side-fields-row">
+        <div className="ticket-head-fields">
             <label>
               Status
               {readOnly ? (
@@ -4058,14 +4086,232 @@ function TicketDetail({
               )}
             </label>
           </div>
-          <div className="side-meta">
-            <div>
-              <span className="muted">Updated</span>
-              <strong>{formatDate(ticket.updatedAt)}</strong>
-            </div>
-          </div>
-        </aside>
       </div>
+
+      <div className="detail-main">
+          <div className="description-block">
+            <h2>Description</h2>
+            <NotesContent text={ticket.description} />
+          </div>
+
+          <div className="comments">
+            <h2>
+              Updates ({filteredComments.length}
+              {commentFilter.trim() ? ` of ${comments.length}` : ""})
+            </h2>
+            {showCommentFilter && (
+              <div className="comment-filter">
+                <label className="comment-filter-field">
+                  <span className="sr-only">Filter updates</span>
+                  <input
+                    type="search"
+                    value={commentFilter}
+                    onChange={(e) => setCommentFilter(e.target.value)}
+                    placeholder="Filter updates…"
+                  />
+                </label>
+                {commentFilter && (
+                  <button
+                    type="button"
+                    className="btn compact"
+                    onClick={() => setCommentFilter("")}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+            {comments.length === 0 ? (
+              <p className="muted">No updates yet.</p>
+            ) : filteredComments.length === 0 ? (
+              <p className="muted">No updates match this filter.</p>
+            ) : (
+              <ul className="comment-list">
+                {filteredComments.map((c) => (
+                  <li key={c.id} className="comment">
+                    <div className="comment-meta">
+                      <span className="muted">{formatDate(c.createdAt)}</span>
+                      {" "}
+                      <strong>{c.author}</strong>
+                      {" "}
+                      {c.kind === "call"
+                        ? `had a call${
+                            callParticipantNames(c, companyPeople).length
+                              ? ` with ${formatNameList(
+                                  callParticipantNames(c, companyPeople)
+                                )}`
+                              : ""
+                          }`
+                        : isFieldChangeUpdate(c.kind)
+                          ? fieldChangePhrase(c)
+                          : updateKindPhrase(c.kind)}
+                      {!readOnly && c.customerVisible === false && (
+                        <span className="update-internal-tag">Internal</span>
+                      )}
+                    </div>
+                    {isFieldChangeUpdate(c.kind) ? null : (
+                      <NotesContent text={c.body} />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {showComposer ? (
+              <form className="form comment-form" onSubmit={handleComment}>
+                <div className="form-field">
+                  <div className="update-compose-head">
+                    <span className="comment-heading">
+                      Update below as {agentName}
+                    </span>
+                    <label className="update-kind-field">
+                      <span className="sr-only">Update type</span>
+                      <select
+                        value={kind}
+                        onChange={(e) => setKind(e.target.value)}
+                        disabled={saving}
+                      >
+                        {updateKinds.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {kind === "call" && (
+                    <div className="call-participants">
+                      <span className="call-participants-label">On the call</span>
+                      {(callPersonIds.length > 0 || externalNames.length > 0) && (
+                        <ul className="call-chip-list">
+                          {callPersonIds.map((personId) => {
+                            const person = companyPeople.find(
+                              (row) => row.id === personId
+                            );
+                            return (
+                              <li key={personId} className="call-chip">
+                                {person?.name || "Unknown person"}
+                                <button
+                                  type="button"
+                                  className="call-chip-remove"
+                                  aria-label={`Remove ${person?.name || "person"}`}
+                                  onClick={() => removeCallPerson(personId)}
+                                >
+                                  ×
+                                </button>
+                              </li>
+                            );
+                          })}
+                          {externalNames.map((name) => (
+                            <li key={`ext-${name}`} className="call-chip">
+                              {name}
+                              <button
+                                type="button"
+                                className="call-chip-remove"
+                                aria-label={`Remove ${name}`}
+                                onClick={() => removeExternalName(name)}
+                              >
+                                ×
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="call-add-row">
+                        <select
+                          value=""
+                          disabled={saving}
+                          onChange={(e) => {
+                            addCallPerson(e.target.value);
+                            e.target.value = "";
+                          }}
+                        >
+                          <option value="">Add a person</option>
+                          {companyPeople
+                            .filter((person) => !callPersonIds.includes(person.id))
+                            .map((person) => (
+                              <option key={person.id} value={person.id}>
+                                {person.name}
+                              </option>
+                            ))}
+                        </select>
+                        <input
+                          value={externalDraft}
+                          disabled={saving}
+                          placeholder="Or type a name"
+                          onChange={(e) => setExternalDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              addExternalName(e.currentTarget.value);
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn compact"
+                          disabled={saving || !externalDraft.trim()}
+                          onClick={() => addExternalName()}
+                        >
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <NotesField
+                    required
+                    rows={4}
+                    value={body}
+                    onChange={setBody}
+                    disabled={saving}
+                    placeholder={
+                      kind === "close"
+                        ? "Note why this ticket is being closed…"
+                        : kind === "call"
+                          ? "Summarize the call…"
+                          : readOnly
+                            ? "Ask a question or add more details…"
+                            : "Update the customer or note what you tried…"
+                    }
+                  />
+                </div>
+                <div className="form-actions comment-form-actions">
+                  {!readOnly && (
+                    <label className="customer-visible-check">
+                      <input
+                        type="checkbox"
+                        checked={customerVisible}
+                        onChange={(e) => setCustomerVisible(e.target.checked)}
+                        disabled={saving}
+                      />
+                      Show to customer
+                    </label>
+                  )}
+                  <div className="comment-form-buttons">
+                    <CancelIconButton
+                      className="tooltip-top"
+                      disabled={saving}
+                      onClick={() => {
+                        resetComposer();
+                      }}
+                    />
+                    <button type="submit" className="btn primary" disabled={saving}>
+                      {saving ? "Posting…" : "Post update"}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                className="btn ghost comment-compose-btn"
+                onClick={() => setShowComposer(true)}
+              >
+                Add an update
+              </button>
+            )}
+          </div>
+        </div>
     </section>
   );
 }

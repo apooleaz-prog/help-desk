@@ -88,6 +88,7 @@ function seedData() {
           {
             id: "c-1",
             author: "Support Bot",
+            kind: "comment",
             body: "Thanks for reporting — looking into the reset flow.",
             createdAt: new Date(Date.now() - 1000 * 60 * 60 * 4).toISOString(),
           },
@@ -158,6 +159,9 @@ const SCHEMA_SQL = `
     ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
     author TEXT NOT NULL,
     agent_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'comment',
+    call_participants TEXT NOT NULL DEFAULT '',
+    customer_visible INTEGER NOT NULL DEFAULT 1,
     body TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
@@ -241,6 +245,80 @@ function snapshotCompanyIds(data) {
   return [...new Set((data.companies ?? []).map((company) => company.id).filter(Boolean))];
 }
 
+function parseCallParticipants(raw) {
+  if (!raw) return { personIds: [], externalNames: [], people: [] };
+  if (typeof raw === "object") {
+    const personIds = Array.isArray(raw.personIds)
+      ? raw.personIds.map(String).filter(Boolean)
+      : [];
+    const people = Array.isArray(raw.people)
+      ? raw.people
+          .map((person) => ({
+            id: String(person?.id ?? ""),
+            name: String(person?.name ?? "").trim(),
+          }))
+          .filter((person) => person.id && person.name)
+      : [];
+    return {
+      personIds: personIds.length ? personIds : people.map((person) => person.id),
+      externalNames: Array.isArray(raw.externalNames)
+        ? raw.externalNames.map((name) => String(name).trim()).filter(Boolean)
+        : [],
+      people,
+    };
+  }
+  if (typeof raw !== "string" || !raw.trim()) {
+    return { personIds: [], externalNames: [], people: [] };
+  }
+  try {
+    return parseCallParticipants(JSON.parse(raw));
+  } catch {
+    return { personIds: [], externalNames: [], people: [] };
+  }
+}
+
+function serializeCallParticipants(value) {
+  const parsed = parseCallParticipants(value);
+  if (!parsed.personIds.length && !parsed.externalNames.length) return "";
+  return JSON.stringify(parsed);
+}
+
+function persistCommentKind(kind) {
+  if (
+    kind === "call" ||
+    kind === "close" ||
+    kind === "status" ||
+    kind === "priority"
+  ) {
+    return kind;
+  }
+  return "comment";
+}
+
+function persistCustomerVisible(value) {
+  if (value === false || value === 0 || value === "0") return 0;
+  return 1;
+}
+
+function mapComment(row) {
+  const kind = persistCommentKind(row.kind);
+  const callParticipants = parseCallParticipants(
+    row.callParticipants ?? row.call_participants
+  );
+  return {
+    id: row.id,
+    author: row.author,
+    body: row.body,
+    kind,
+    customerVisible: persistCustomerVisible(
+      row.customerVisible ?? row.customer_visible
+    ) === 1,
+    createdAt: row.createdAt,
+    ...(row.agentId ? { agentId: row.agentId } : {}),
+    ...(kind === "call" ? { callParticipants } : {}),
+  };
+}
+
 function writeSqliteSnapshot(database, data) {
   database.exec("PRAGMA foreign_keys = OFF;");
   database.exec("BEGIN IMMEDIATE");
@@ -308,7 +386,7 @@ function writeSqliteSnapshot(database, data) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const insertComment = database.prepare(
-      `INSERT INTO comments (id, ticket_id, author, agent_id, body, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO comments (id, ticket_id, author, agent_id, kind, call_participants, customer_visible, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ticket of data.tickets ?? []) {
       insertTicket.run(
@@ -316,7 +394,17 @@ function writeSqliteSnapshot(database, data) {
         ticket.priority, ticket.status, ticket.createdAt, ticket.updatedAt
       );
       for (const comment of ticket.comments ?? []) {
-        insertComment.run(comment.id, ticket.id, comment.author, comment.agentId ?? null, comment.body, comment.createdAt);
+        insertComment.run(
+          comment.id,
+          ticket.id,
+          comment.author,
+          comment.agentId ?? null,
+          persistCommentKind(comment.kind),
+          serializeCallParticipants(comment.callParticipants),
+          persistCustomerVisible(comment.customerVisible),
+          comment.body,
+          comment.createdAt
+        );
       }
     }
     const insertSession = database.prepare(
@@ -411,11 +499,11 @@ function readSqliteSnapshot(database) {
       ...ticket,
       comments: database
         .prepare(
-          `SELECT id, author, agent_id AS agentId, body, created_at AS createdAt
+          `SELECT id, author, agent_id AS agentId, kind, call_participants AS callParticipants, customer_visible AS customerVisible, body, created_at AS createdAt
            FROM comments WHERE ticket_id = ? ORDER BY created_at DESC`
         )
         .all(ticket.id)
-        .map((c) => ({ ...c, agentId: c.agentId ?? undefined })),
+        .map(mapComment),
     }));
   return { agents, sessions, companies, tickets };
 }
@@ -502,9 +590,19 @@ async function writePgSnapshot(pool, data) {
       );
       for (const comment of ticket.comments ?? []) {
         await client.query(
-          `INSERT INTO comments (id, ticket_id, author, agent_id, body, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6)`,
-          [comment.id, ticket.id, comment.author, comment.agentId ?? null, comment.body, comment.createdAt]
+          `INSERT INTO comments (id, ticket_id, author, agent_id, kind, call_participants, customer_visible, body, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [
+            comment.id,
+            ticket.id,
+            comment.author,
+            comment.agentId ?? null,
+            persistCommentKind(comment.kind),
+            serializeCallParticipants(comment.callParticipants),
+            persistCustomerVisible(comment.customerVisible),
+            comment.body,
+            comment.createdAt,
+          ]
         );
       }
     }
@@ -598,11 +696,11 @@ async function readPgSnapshot(pool) {
   for (const ticket of ticketRows) {
     const comments = (
       await pool.query(
-        `SELECT id, author, agent_id AS "agentId", body, created_at AS "createdAt"
+        `SELECT id, author, agent_id AS "agentId", kind, call_participants AS "callParticipants", customer_visible AS "customerVisible", body, created_at AS "createdAt"
          FROM comments WHERE ticket_id = $1 ORDER BY created_at DESC`,
         [ticket.id]
       )
-    ).rows.map((c) => ({ ...c, agentId: c.agentId ?? undefined }));
+    ).rows.map(mapComment);
     tickets.push({ ...ticket, comments });
   }
   return { agents, sessions, companies, tickets };
@@ -649,6 +747,16 @@ function getSqlite() {
   }
   if (assetCols.length && !assetCols.some((col) => col.name === "person_id")) {
     sqliteDb.exec(`ALTER TABLE assets ADD COLUMN person_id TEXT REFERENCES people(id)`);
+  }
+  const commentCols = sqliteDb.prepare(`PRAGMA table_info(comments)`).all();
+  if (commentCols.length && !commentCols.some((col) => col.name === "kind")) {
+    sqliteDb.exec(`ALTER TABLE comments ADD COLUMN kind TEXT NOT NULL DEFAULT 'comment'`);
+  }
+  if (commentCols.length && !commentCols.some((col) => col.name === "call_participants")) {
+    sqliteDb.exec(`ALTER TABLE comments ADD COLUMN call_participants TEXT NOT NULL DEFAULT ''`);
+  }
+  if (commentCols.length && !commentCols.some((col) => col.name === "customer_visible")) {
+    sqliteDb.exec(`ALTER TABLE comments ADD COLUMN customer_visible INTEGER NOT NULL DEFAULT 1`);
   }
   migrateSessionsTable(sqliteDb);
   const agentCount = sqliteDb.prepare(`SELECT COUNT(*) AS c FROM agents`).get().c;
@@ -717,6 +825,15 @@ async function getPg() {
   );
   await pgPool.query(
     `ALTER TABLE assets ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE SET NULL`
+  );
+  await pgPool.query(
+    `ALTER TABLE comments ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'comment'`
+  );
+  await pgPool.query(
+    `ALTER TABLE comments ADD COLUMN IF NOT EXISTS call_participants TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE comments ADD COLUMN IF NOT EXISTS customer_visible INTEGER NOT NULL DEFAULT 1`
   );
   await pgPool.query(
     `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE CASCADE`
@@ -1278,11 +1395,16 @@ function publicAgent(agent) {
   };
 }
 
-function enrichTicket(db, ticket) {
+function enrichTicket(db, ticket, role) {
   const company = findCompany(db, ticket.companyId);
   const person = findPerson(company, ticket.personId);
+  const comments =
+    role === "person"
+      ? (ticket.comments ?? []).filter((comment) => comment.customerVisible !== false)
+      : ticket.comments;
   return {
     ...ticket,
+    comments,
     company: company
       ? {
           id: company.id,
