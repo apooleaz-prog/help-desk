@@ -1650,6 +1650,10 @@
 }
 
 .ticket-created-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   margin: 0.15rem 0 0;
   font-size: 0.95rem;
   line-height: 1.55;
@@ -1819,6 +1823,30 @@
   color: var(--muted);
 }
 
+.description-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.55rem;
+}
+
+.description-head h2 {
+  margin: 0;
+}
+
+.ticket-duration-total {
+  display: inline-block;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  background: #e8eef2;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
 .comments-toolbar {
   display: flex;
   align-items: center;
@@ -1980,6 +2008,11 @@
   animation: rise 0.35s ease both;
 }
 
+.comment.is-callback {
+  background: #fff1f2;
+  border-color: #fecdd3;
+}
+
 .comment-meta {
   display: block;
   margin-bottom: 0.35rem;
@@ -2002,6 +2035,20 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.update-duration-tag {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  background: #e8eef2;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
   vertical-align: middle;
 }
 
@@ -2063,6 +2110,18 @@
 .update-kind-field select {
   width: auto;
   max-width: 100%;
+}
+
+.update-duration-field {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.update-duration-field select {
+  width: auto;
+  min-width: 4.5rem;
+  max-width: 100%;
+  color: var(--ink);
 }
 
 .call-participants {

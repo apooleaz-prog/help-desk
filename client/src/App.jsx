@@ -54,7 +54,12 @@ const STATUSES = [
 ];
 
 const STATUS_FILTERS = STATUSES.filter((status) => status.value !== "all");
+const CUSTOMER_STATUS_FILTERS = STATUS_FILTERS.filter(
+  (status) => status.value === "open" || status.value === "closed"
+);
+const CUSTOMER_OPEN_STATUSES = ["open", "in_progress", "on_hold"];
 const DEFAULT_TICKET_STATUSES = ["open", "in_progress"];
+const CUSTOMER_DEFAULT_TICKET_STATUSES = ["open"];
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const PRIORITY_FILTERS = [
   { value: "low", label: "Low" },
@@ -65,17 +70,21 @@ const PRIORITY_FILTERS = [
 const AGENT_UPDATE_KINDS = [
   { value: "comment", label: "Comment" },
   { value: "call", label: "Call" },
+  { value: "callback", label: "Request call back" },
   { value: "asset", label: "Asset" },
-  { value: "close", label: "Close" },
+  { value: "close", label: "Close ticket" },
 ];
 const PERSON_UPDATE_KINDS = [
   { value: "comment", label: "Comment" },
+  { value: "callback", label: "Request call back" },
   { value: "asset", label: "Asset" },
-  { value: "close", label: "Close" },
+  { value: "close", label: "Close ticket" },
 ];
+const DURATION_MINUTES = [15, 30, 45, 60, 75, 90, 105, 120, 135, 150];
 
 function updateKindPhrase(kind) {
   if (kind === "call") return "had a call";
+  if (kind === "callback") return "requested a call back";
   if (kind === "close") return "closed";
   if (kind === "status") return "changed the status";
   if (kind === "priority") return "changed the priority";
@@ -339,8 +348,53 @@ function formatCreatedOn(iso) {
   });
 }
 
-function labelStatus(status) {
-  return STATUSES.find((s) => s.value === status)?.label || String(status).replaceAll("_", " ");
+function customerFacingStatus(status) {
+  return status === "closed" ? "closed" : "open";
+}
+
+function expandCustomerStatusFilter(filter) {
+  const next = [];
+  for (const value of filter) {
+    if (value === "open") next.push(...CUSTOMER_OPEN_STATUSES);
+    else next.push(value);
+  }
+  return [...new Set(next)];
+}
+
+function labelStatus(status, customerView = false) {
+  const value = customerView ? customerFacingStatus(status) : status;
+  return STATUSES.find((s) => s.value === value)?.label || String(value).replaceAll("_", " ");
+}
+
+function parseStatusChange(body) {
+  const match = String(body || "").match(/^Changed the status from (.+) to (.+)$/i);
+  if (!match) return null;
+  return { from: match[1], to: match[2] };
+}
+
+function customerFacingStatusLabel(label) {
+  const normalized = String(label)
+    .trim()
+    .toLowerCase()
+    .replaceAll("_", " ");
+  if (normalized === "closed") return "Closed";
+  if (
+    normalized === "open" ||
+    normalized === "in progress" ||
+    normalized === "on hold"
+  ) {
+    return "Open";
+  }
+  return String(label).trim();
+}
+
+function customerStatusChangePhrase(comment) {
+  const parsed = parseStatusChange(comment.body);
+  if (!parsed) return fieldChangePhrase(comment);
+  const from = customerFacingStatusLabel(parsed.from);
+  const to = customerFacingStatusLabel(parsed.to);
+  if (from === to) return null;
+  return `changed the status from ${from} to ${to}`;
 }
 
 function useCollapseMiddles(ref, deps = []) {
@@ -419,7 +473,12 @@ function ticketFitsFilters(ticket, {
   agent,
   person,
 }) {
-  if (statusFilter.length && !statusFilter.includes(ticket.status)) return false;
+  if (statusFilter.length) {
+    const wanted = isPerson
+      ? expandCustomerStatusFilter(statusFilter)
+      : statusFilter;
+    if (!wanted.includes(ticket.status)) return false;
+  }
   if (priorityFilter.length && !priorityFilter.includes(ticket.priority)) {
     return false;
   }
@@ -574,14 +633,15 @@ function App() {
           setAgent(null);
           setMineFilter(true);
           setAllFilter(false);
+          setStatusFilter(CUSTOMER_DEFAULT_TICKET_STATUSES);
         } else {
           setRole("agent");
           setAgent(data.agent);
           setPerson(null);
           setMineFilter(false);
           setAllFilter(true);
+          setStatusFilter(DEFAULT_TICKET_STATUSES);
         }
-        setStatusFilter(DEFAULT_TICKET_STATUSES);
       })
       .catch(() => {
         clearToken();
@@ -634,7 +694,7 @@ function App() {
         return;
       }
       const ticketQuery = {
-        status: statusFilter,
+        status: isPerson ? expandCustomerStatusFilter(statusFilter) : statusFilter,
         q: query,
         priority: priorityFilter,
       };
@@ -663,7 +723,13 @@ function App() {
       setTickets(scopedData);
       setTicketsByPriority(countByPriority(scopedStats));
       setOpenByPriority(
-        countByPriority(scopedStats.filter((ticket) => ticket.status === "open"))
+        countByPriority(
+          scopedStats.filter((ticket) =>
+            isPerson
+              ? CUSTOMER_OPEN_STATUSES.includes(ticket.status)
+              : ticket.status === "open"
+          )
+        )
       );
     } catch (err) {
       if (requestId !== ticketsRequestId.current) return;
@@ -737,18 +803,19 @@ function App() {
         setAgent(null);
         setMineFilter(true);
         setAllFilter(false);
+        setStatusFilter(CUSTOMER_DEFAULT_TICKET_STATUSES);
       } else {
         setRole("agent");
         setAgent(data.agent);
         setPerson(null);
         setMineFilter(false);
         setAllFilter(true);
+        setStatusFilter(DEFAULT_TICKET_STATUSES);
       }
       setView("list");
       setShowAdvanced(false);
       setCompanyFilter("");
       setPriorityFilter([]);
-      setStatusFilter(DEFAULT_TICKET_STATUSES);
       setQuery("");
       if (window.PasswordCredential && navigator.credentials?.store) {
         navigator.credentials
@@ -3415,7 +3482,7 @@ function TicketList({
           </div>
           <div className="filter-tab-groups">
             <div className="status-tabs" role="group" aria-label="Filter by status">
-              {STATUS_FILTERS.map((s) => {
+              {(portalMode ? CUSTOMER_STATUS_FILTERS : STATUS_FILTERS).map((s) => {
                 const selected = statusFilter.includes(s.value);
                 return (
                   <button
@@ -3515,8 +3582,8 @@ function TicketList({
                   </div>
                   <div className="ticket-row-meta">
                     <span className={`pill priority ${ticket.priority}`}>{ticket.priority}</span>
-                    <span className={`pill status ${ticket.status}`}>
-                      {labelStatus(ticket.status)}
+                    <span className={`pill status ${portalMode ? customerFacingStatus(ticket.status) : ticket.status}`}>
+                      {labelStatus(ticket.status, portalMode)}
                     </span>
                   </div>
                 </button>
@@ -5410,6 +5477,7 @@ function TicketDetail({
   const [showComposer, setShowComposer] = useState(false);
   const [commentFilter, setCommentFilter] = useState("");
   const [internal, setInternal] = useState(false);
+  const [durationMinutes, setDurationMinutes] = useState("");
   const [ticketAssets, setTicketAssets] = useState([]);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState("");
@@ -5424,7 +5492,13 @@ function TicketDetail({
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
     );
     if (!readOnly) return rows;
-    return rows.filter((comment) => comment.customerVisible !== false);
+    return rows.filter((comment) => {
+      if (comment.customerVisible === false) return false;
+      if (comment.kind === "status" && customerStatusChangePhrase(comment) == null) {
+        return false;
+      }
+      return true;
+    });
   }, [ticket.comments, readOnly]);
   const filteredComments = useMemo(() => {
     const needle = commentFilter.trim().toLowerCase();
@@ -5441,12 +5515,21 @@ function TicketDetail({
       );
     });
   }, [comments, commentFilter, companyPeople]);
+  const totalDurationMinutes = useMemo(
+    () =>
+      (ticket.comments ?? []).reduce(
+        (sum, comment) => sum + (Number(comment.durationMinutes) || 0),
+        0
+      ),
+    [ticket.comments]
+  );
   const showCommentFilter = comments.length > 1;
 
   function resetComposer() {
     setBody("");
     setKind("comment");
     setInternal(false);
+    setDurationMinutes("");
     setCallPersonIds(ticket.personId ? [ticket.personId] : []);
     setExternalNames([]);
     setExternalDraft("");
@@ -5487,7 +5570,7 @@ function TicketDetail({
     onComment({
       body,
       kind,
-      ...(readOnly ? {} : { customerVisible: !internal }),
+      ...(readOnly ? {} : { customerVisible: !internal, durationMinutes }),
       ...(kind === "call"
         ? {
             callParticipants: {
@@ -5548,8 +5631,8 @@ function TicketDetail({
             <label>
               Status
               {readOnly ? (
-                <span className={`pill status ${ticket.status}`}>
-                  {labelStatus(ticket.status)}
+                <span className={`pill status ${customerFacingStatus(ticket.status)}`}>
+                  {labelStatus(ticket.status, true)}
                 </span>
               ) : (
                 <select
@@ -5600,9 +5683,28 @@ function TicketDetail({
             />
           </div>
           <p className="ticket-created-line">
-            Ticket <span className="ticket-id">{ticket.id.slice(0, 8)}</span>
-            {" · "}
-            {formatCreatedOn(ticket.createdAt)}
+            <span>
+              Ticket <span className="ticket-id">{ticket.id.slice(0, 8)}</span>
+              {" · "}
+              {formatCreatedOn(ticket.createdAt)}
+            </span>
+            {!readOnly && showComposer && (
+              <label className="update-duration-field">
+                <span className="sr-only">Duration in minutes</span>
+                <select
+                  value={durationMinutes}
+                  onChange={(e) => setDurationMinutes(e.target.value)}
+                  disabled={saving}
+                >
+                  <option value="">Duration</option>
+                  {DURATION_MINUTES.map((minutes) => (
+                    <option key={minutes} value={minutes}>
+                      {minutes}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </p>
         </div>
       </div>
@@ -5610,7 +5712,14 @@ function TicketDetail({
       <div className={`detail-main${showComposer ? " is-composing" : ""}`}>
           {!showComposer && (
             <div className="description-block">
-              <h2>Description</h2>
+              <div className="description-head">
+                <h2>Description</h2>
+                {!readOnly && (
+                  <span className="ticket-duration-total">
+                    Duration {totalDurationMinutes} mins
+                  </span>
+                )}
+              </div>
               <NotesContent text={ticket.description} />
             </div>
           )}
@@ -5776,7 +5885,9 @@ function TicketDetail({
                     placeholder={
                       kind === "close"
                         ? "Note why this ticket is being closed…"
-                        : kind === "call"
+                        : kind === "callback"
+                          ? "When to call, and any details…"
+                          : kind === "call"
                           ? "Summarize the call (optional)…"
                           : kind === "asset"
                             ? "Add a comment (optional)…"
@@ -5823,7 +5934,7 @@ function TicketDetail({
             ) : (
               <ul className="comment-list">
                 {filteredComments.map((c) => (
-                  <li key={c.id} className="comment">
+                  <li key={c.id} className={`comment${c.kind === "callback" ? " is-callback" : ""}`}>
                     <div className="comment-meta">
                       <span className="muted">{formatDate(c.createdAt)}</span>
                       {" "}
@@ -5838,10 +5949,17 @@ function TicketDetail({
                               : ""
                           }`
                         : isFieldChangeUpdate(c.kind)
-                          ? fieldChangePhrase(c)
+                          ? readOnly && c.kind === "status"
+                            ? customerStatusChangePhrase(c)
+                            : fieldChangePhrase(c)
                           : updateKindPhrase(c.kind)}
                       {!readOnly && c.customerVisible === false && (
                         <span className="update-internal-tag">Internal</span>
+                      )}
+                      {!readOnly && Number(c.durationMinutes) > 0 && (
+                        <span className="update-duration-tag">
+                          {Number(c.durationMinutes)} mins
+                        </span>
                       )}
                     </div>
                     {isFieldChangeUpdate(c.kind) ? null : (

@@ -18,6 +18,7 @@ import {
   PRIORITIES,
   SQLITE_PATH,
   STATUSES,
+  persistDurationMinutes,
   enrichTicket,
   findCompany,
   findPerson,
@@ -106,8 +107,8 @@ async function assignedLocationIdForCompany(companyId, locationId) {
 }
 
 const STOCK_UA = "HelpDesk/1.0 (asset type stock images)";
-const UPDATE_KINDS = ["comment", "call", "close", "asset"];
-const PERSON_UPDATE_KINDS = ["comment", "close", "asset"];
+const UPDATE_KINDS = ["comment", "call", "callback", "close", "asset"];
+const PERSON_UPDATE_KINDS = ["comment", "callback", "close", "asset"];
 
 function normalizeUpdateKind(kind, role) {
   const value = String(kind ?? "comment").trim().toLowerCase() || "comment";
@@ -1436,12 +1437,18 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
         .json({ error: `status must be one of: ${STATUSES.join(", ")}` });
     }
     if (status !== ticket.status) {
+      const fromStatus = ticket.status;
+      const fromHoldOrProgress =
+        fromStatus === "in_progress" || fromStatus === "on_hold";
+      const closingFromHoldOrProgress = fromHoldOrProgress && status === "closed";
       changeComments.push(
         fieldChangeComment(
           req.agent,
           "status",
-          `Changed the status from ${labelTicketStatus(ticket.status)} to ${labelTicketStatus(status)}`,
-          true
+          `Changed the status from ${
+            closingFromHoldOrProgress ? "Open" : labelTicketStatus(fromStatus)
+          } to ${labelTicketStatus(status)}`,
+          status !== "in_progress" && status !== "on_hold"
         )
       );
       ticket.status = status;
@@ -1510,15 +1517,16 @@ app.delete("/api/tickets/:id", requireAgent, async (req, res) => {
 });
 
 app.post("/api/tickets/:id/comments", async (req, res) => {
-  const { body, kind, callParticipants, customerVisible, assetId } = req.body ?? {};
+  const { body, kind, callParticipants, customerVisible, assetId, durationMinutes } =
+    req.body ?? {};
 
   const normalizedKind = normalizeUpdateKind(kind, req.role);
   if (!normalizedKind) {
     return res.status(400).json({
       error:
         req.role === "person"
-          ? "kind must be comment, close, or asset"
-          : "kind must be comment, call, close, or asset",
+          ? "kind must be comment, callback, close, or asset"
+          : "kind must be comment, call, callback, close, or asset",
     });
   }
 
@@ -1580,6 +1588,7 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
           kind: normalizedKind,
           body: trimmedBody,
           customerVisible: visibleToCustomer,
+          durationMinutes: persistDurationMinutes(durationMinutes),
           createdAt: new Date().toISOString(),
           ...(participants ? { callParticipants: participants } : {}),
           ...(asset ? { asset } : {}),

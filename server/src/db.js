@@ -165,6 +165,7 @@ const SCHEMA_SQL = `
     call_participants TEXT NOT NULL DEFAULT '',
     customer_visible INTEGER NOT NULL DEFAULT 1,
     asset_json TEXT NOT NULL DEFAULT '',
+    duration_minutes INTEGER NOT NULL DEFAULT 0,
     body TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
@@ -359,6 +360,7 @@ function commentAssetSnapshot(asset) {
 function persistCommentKind(kind) {
   if (
     kind === "call" ||
+    kind === "callback" ||
     kind === "close" ||
     kind === "status" ||
     kind === "priority" ||
@@ -372,6 +374,13 @@ function persistCommentKind(kind) {
 function persistCustomerVisible(value) {
   if (value === false || value === 0 || value === "0") return 0;
   return 1;
+}
+
+function persistDurationMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0;
+  const allowed = [15, 30, 45, 60, 75, 90, 105, 120, 135, 150];
+  return allowed.includes(minutes) ? minutes : 0;
 }
 
 function mapComment(row) {
@@ -388,6 +397,9 @@ function mapComment(row) {
     customerVisible: persistCustomerVisible(
       row.customerVisible ?? row.customer_visible
     ) === 1,
+    durationMinutes: persistDurationMinutes(
+      row.durationMinutes ?? row.duration_minutes
+    ),
     createdAt: row.createdAt,
     ...(row.agentId ? { agentId: row.agentId } : {}),
     ...(kind === "call" ? { callParticipants } : {}),
@@ -478,7 +490,7 @@ function writeSqliteSnapshot(database, data) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const insertComment = database.prepare(
-      `INSERT INTO comments (id, ticket_id, author, agent_id, kind, call_participants, asset_json, customer_visible, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO comments (id, ticket_id, author, agent_id, kind, call_participants, asset_json, customer_visible, duration_minutes, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ticket of data.tickets ?? []) {
       insertTicket.run(
@@ -496,6 +508,7 @@ function writeSqliteSnapshot(database, data) {
           serializeCallParticipants(comment.callParticipants),
           serializeCommentAsset(comment.asset),
           persistCustomerVisible(comment.customerVisible),
+          persistDurationMinutes(comment.durationMinutes),
           comment.body,
           comment.createdAt
         );
@@ -619,7 +632,7 @@ function readSqliteSnapshot(database) {
       ...ticket,
       comments: database
         .prepare(
-          `SELECT id, author, agent_id AS agentId, kind, call_participants AS callParticipants, asset_json AS assetJson, customer_visible AS customerVisible, body, created_at AS createdAt
+          `SELECT id, author, agent_id AS agentId, kind, call_participants AS callParticipants, asset_json AS assetJson, customer_visible AS customerVisible, duration_minutes AS durationMinutes, body, created_at AS createdAt
            FROM comments WHERE ticket_id = ? ORDER BY created_at DESC`
         )
         .all(ticket.id)
@@ -728,8 +741,8 @@ async function writePgSnapshot(pool, data) {
       );
       for (const comment of ticket.comments ?? []) {
         await client.query(
-          `INSERT INTO comments (id, ticket_id, author, agent_id, kind, call_participants, asset_json, customer_visible, body, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          `INSERT INTO comments (id, ticket_id, author, agent_id, kind, call_participants, asset_json, customer_visible, duration_minutes, body, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [
             comment.id,
             ticket.id,
@@ -739,6 +752,7 @@ async function writePgSnapshot(pool, data) {
             serializeCallParticipants(comment.callParticipants),
             serializeCommentAsset(comment.asset),
             persistCustomerVisible(comment.customerVisible),
+            persistDurationMinutes(comment.durationMinutes),
             comment.body,
             comment.createdAt,
           ]
@@ -861,7 +875,7 @@ async function readPgSnapshot(pool) {
   for (const ticket of ticketRows) {
     const comments = (
       await pool.query(
-        `SELECT id, author, agent_id AS "agentId", kind, call_participants AS "callParticipants", asset_json AS "assetJson", customer_visible AS "customerVisible", body, created_at AS "createdAt"
+        `SELECT id, author, agent_id AS "agentId", kind, call_participants AS "callParticipants", asset_json AS "assetJson", customer_visible AS "customerVisible", duration_minutes AS "durationMinutes", body, created_at AS "createdAt"
          FROM comments WHERE ticket_id = $1 ORDER BY created_at DESC`,
         [ticket.id]
       )
@@ -942,6 +956,9 @@ function getSqlite() {
   }
   if (commentCols.length && !commentCols.some((col) => col.name === "asset_json")) {
     sqliteDb.exec(`ALTER TABLE comments ADD COLUMN asset_json TEXT NOT NULL DEFAULT ''`);
+  }
+  if (commentCols.length && !commentCols.some((col) => col.name === "duration_minutes")) {
+    sqliteDb.exec(`ALTER TABLE comments ADD COLUMN duration_minutes INTEGER NOT NULL DEFAULT 0`);
   }
   migrateSessionsTable(sqliteDb);
   sqliteDb.exec(`UPDATE tickets SET status = 'on_hold' WHERE status = 'resolved'`);
@@ -1038,6 +1055,9 @@ async function getPg() {
   );
   await pgPool.query(
     `ALTER TABLE comments ADD COLUMN IF NOT EXISTS asset_json TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE comments ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 0`
   );
   await pgPool.query(
     `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE CASCADE`
@@ -1823,15 +1843,57 @@ function publicAgent(agent) {
   };
 }
 
+function presentCustomerStatusComment(comment) {
+  const match = String(comment.body || "").match(
+    /^Changed the status from (.+) to (.+)$/i
+  );
+  if (!match) return comment;
+  const fromLabel = customerFacingStatusLabel(match[1]);
+  const toLabel = customerFacingStatusLabel(match[2]);
+  if (fromLabel === toLabel) return null;
+  return {
+    ...comment,
+    body: `Changed the status from ${fromLabel} to ${toLabel}`,
+  };
+}
+
+function customerFacingStatusLabel(label) {
+  const normalized = String(label)
+    .trim()
+    .toLowerCase()
+    .replaceAll("_", " ");
+  if (normalized === "closed") return "Closed";
+  if (
+    normalized === "open" ||
+    normalized === "in progress" ||
+    normalized === "on hold"
+  ) {
+    return "Open";
+  }
+  return String(label).trim();
+}
+
 function enrichTicket(db, ticket, role) {
   const company = findCompany(db, ticket.companyId);
   const person = findPerson(company, ticket.personId);
   const comments =
     role === "person"
-      ? (ticket.comments ?? []).filter((comment) => comment.customerVisible !== false)
+      ? (ticket.comments ?? []).flatMap((comment) => {
+          if (comment.customerVisible === false) return [];
+          if (comment.kind === "status") {
+            const presented = presentCustomerStatusComment(comment);
+            if (!presented) return [];
+            const { durationMinutes, ...rest } = presented;
+            return [rest];
+          }
+          const { durationMinutes, ...rest } = comment;
+          return [rest];
+        })
       : ticket.comments;
   return {
     ...ticket,
+    status:
+      role === "person" && ticket.status !== "closed" ? "open" : ticket.status,
     comments,
     company: company
       ? {
@@ -1849,6 +1911,7 @@ function enrichTicket(db, ticket, role) {
 export {
   STATUSES,
   PRIORITIES,
+  persistDurationMinutes,
   SQLITE_PATH,
   ensureReady,
   readDb,
