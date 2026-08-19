@@ -43,11 +43,20 @@ import {
   removeAssetType,
   listCompanyAssets,
   findAssetById,
+  commentAssetSnapshot,
   findAssetByNumber,
   insertAsset,
   updateAssetRecord,
   removeAsset,
   removeAssetsForCompany,
+  listCompanyLocations,
+  findLocationById,
+  insertLocation,
+  updateLocationRecord,
+  removeLocation,
+  removeLocationsForCompany,
+  countAssetsByCompany,
+  countLocationsByCompany,
   removeCompany,
 } from "./db.js";
 
@@ -88,9 +97,17 @@ function assignedPersonIdForCompany(company, personId) {
   return { ok: true, personId: person.id };
 }
 
+async function assignedLocationIdForCompany(companyId, locationId) {
+  if (locationId === undefined) return { ok: true };
+  if (locationId === null || locationId === "") return { ok: true, locationId: "" };
+  const location = await findLocationById(companyId, locationId);
+  if (!location) return { ok: false };
+  return { ok: true, locationId: location.id };
+}
+
 const STOCK_UA = "HelpDesk/1.0 (asset type stock images)";
-const UPDATE_KINDS = ["comment", "call", "close"];
-const PERSON_UPDATE_KINDS = ["comment", "close"];
+const UPDATE_KINDS = ["comment", "call", "close", "asset"];
+const PERSON_UPDATE_KINDS = ["comment", "close", "asset"];
 
 function normalizeUpdateKind(kind, role) {
   const value = String(kind ?? "comment").trim().toLowerCase() || "comment";
@@ -102,7 +119,7 @@ function normalizeUpdateKind(kind, role) {
 const STATUS_LABELS = {
   open: "Open",
   in_progress: "In progress",
-  resolved: "Resolved",
+  on_hold: "On hold",
   closed: "Closed",
 };
 
@@ -121,16 +138,46 @@ function labelTicketPriority(priority) {
   return PRIORITY_LABELS[priority] || String(priority);
 }
 
-function fieldChangeComment(agent, kind, body) {
+function fieldChangeComment(agent, kind, body, customerVisible = false) {
   return {
     id: uuidv4(),
     author: agent.name,
     agentId: agent.id,
     kind,
     body,
-    customerVisible: false,
+    customerVisible,
     createdAt: new Date().toISOString(),
   };
+}
+
+function mineFilterMode(mine) {
+  if (mine === undefined || mine === null || mine === "") return "all";
+  const value = String(mine).trim().toLowerCase();
+  if (value === "1" || value === "true" || value === "yes") return "only";
+  if (value === "0" || value === "false" || value === "no") return "exclude";
+  return "all";
+}
+
+function ticketCreatedByCurrentUser(ticket, req) {
+  if (req.role === "agent") {
+    return ticket.creatorAgentId === req.agent.id;
+  }
+  if (req.role === "person") {
+    if (ticket.creatorPersonId === req.person.id) return true;
+    if (!ticket.creatorAgentId && !ticket.creatorPersonId) {
+      return ticket.personId === req.person.id;
+    }
+  }
+  return false;
+}
+
+function ticketVisibleToPerson(ticket, req, db) {
+  const companyId = String(req.person?.companyId || "");
+  if (!companyId) return false;
+  const ticketCompany = String(ticket.companyId || ticket.company?.id || "");
+  if (ticketCompany !== companyId) return false;
+  const company = findCompany(db, companyId);
+  return Boolean(findPerson(company, ticket.personId));
 }
 
 function parseExternalNames(value) {
@@ -430,12 +477,20 @@ app.delete("/api/agents/:id", requireAgent, async (req, res) => {
   res.json({ ok: true });
 });
 
+function publicManufacturer(row) {
+  if (!row) return row;
+  const image = row.image || "";
+  return { ...row, image, logo: image };
+}
+
 app.get("/api/manufacturers", requireAgent, async (_req, res) => {
-  res.json(await listManufacturers());
+  const rows = await listManufacturers();
+  res.json(rows.map(publicManufacturer));
 });
 
 app.post("/api/manufacturers", requireAgent, async (req, res) => {
   const { name, details = "" } = req.body ?? {};
+  const image = req.body?.logo ?? req.body?.image;
 
   if (!name?.trim()) {
     return res.status(400).json({ error: "name is required" });
@@ -443,6 +498,13 @@ app.post("/api/manufacturers", requireAgent, async (req, res) => {
 
   if (notesBodyTooLarge(details)) {
     return res.status(400).json({ error: "details is too large" });
+  }
+
+  const normalizedImage = normalizePersonImage(image);
+  if (image !== undefined && image !== "" && normalizedImage === null) {
+    return res.status(400).json({
+      error: "logo must be a jpeg, png, gif, or webp under 1.5MB",
+    });
   }
 
   const normalizedName = name.trim();
@@ -458,11 +520,12 @@ app.post("/api/manufacturers", requireAgent, async (req, res) => {
     id: uuidv4(),
     name: normalizedName,
     details: String(details ?? "").trim(),
+    image: normalizedImage || "",
     createdAt: now,
     updatedAt: now,
   });
 
-  res.status(201).json(manufacturer);
+  res.status(201).json(publicManufacturer(manufacturer));
 });
 
 app.patch("/api/manufacturers/:id", requireAgent, async (req, res) => {
@@ -472,6 +535,7 @@ app.patch("/api/manufacturers/:id", requireAgent, async (req, res) => {
   }
 
   const { name, details } = req.body ?? {};
+  const image = req.body?.logo !== undefined ? req.body.logo : req.body?.image;
   const fields = {};
 
   if (name !== undefined) {
@@ -495,8 +559,22 @@ app.patch("/api/manufacturers/:id", requireAgent, async (req, res) => {
     fields.details = String(details ?? "").trim();
   }
 
+  if (image !== undefined) {
+    if (image === null || image === "") {
+      fields.image = "";
+    } else {
+      const normalizedImage = normalizePersonImage(image);
+      if (normalizedImage === null) {
+        return res.status(400).json({
+          error: "logo must be a jpeg, png, gif, or webp under 1.5MB",
+        });
+      }
+      fields.image = normalizedImage;
+    }
+  }
+
   const updated = await updateManufacturerRecord(current.id, fields);
-  res.json(updated);
+  res.json(publicManufacturer(updated));
 });
 
 app.delete("/api/manufacturers/:id", requireAgent, async (req, res) => {
@@ -604,9 +682,15 @@ app.delete("/api/asset-types/:id", requireAgent, async (req, res) => {
 
 app.get("/api/companies", requireAgent, async (_req, res) => {
   const { companies } = await readDb();
+  const assetCounts = await countAssetsByCompany();
+  const locationCounts = await countLocationsByCompany();
   const sorted = [...companies]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map(publicCompany);
+    .map((company) => ({
+      ...publicCompany(company),
+      assetCount: assetCounts[company.id] || 0,
+      locationCount: locationCounts[company.id] || 0,
+    }));
   res.json(sorted);
 });
 
@@ -742,7 +826,7 @@ app.patch("/api/companies/:id", requireAgent, async (req, res) => {
 });
 
 app.post("/api/companies/:id/people", requireAgent, async (req, res) => {
-  const { name, email, phone, image, password } = req.body ?? {};
+  const { name, email, phone, image, password, locationId } = req.body ?? {};
 
   if (!name?.trim() || !email?.trim() || !password) {
     return res.status(400).json({ error: "name, email, and password are required" });
@@ -775,6 +859,13 @@ app.post("/api/companies/:id/people", requireAgent, async (req, res) => {
       .json({ error: "A person with that email is already registered at this company" });
   }
 
+  const assignedLocation = await assignedLocationIdForCompany(req.params.id, locationId);
+  if (!assignedLocation.ok) {
+    return res.status(400).json({
+      error: "Location must belong to this customer",
+    });
+  }
+
   const person = {
     id: uuidv4(),
     name: name.trim(),
@@ -782,6 +873,7 @@ app.post("/api/companies/:id/people", requireAgent, async (req, res) => {
     passwordHash: hashPassword(password),
     ...(normalizedPhone ? { phone: normalizedPhone } : {}),
     ...(normalizedImage ? { image: normalizedImage } : {}),
+    ...(assignedLocation.locationId ? { locationId: assignedLocation.locationId } : {}),
   };
 
   db.companies[index].people.push(person);
@@ -791,7 +883,7 @@ app.post("/api/companies/:id/people", requireAgent, async (req, res) => {
 });
 
 app.patch("/api/companies/:companyId/people/:personId", requireAgent, async (req, res) => {
-  const { name, email, phone, image, password } = req.body ?? {};
+  const { name, email, phone, image, password, locationId } = req.body ?? {};
   const db = await readDb();
   const companyIndex = db.companies.findIndex((c) => c.id === req.params.companyId);
   if (companyIndex === -1) {
@@ -859,6 +951,23 @@ app.patch("/api/companies/:companyId/people/:personId", requireAgent, async (req
     person.passwordHash = hashPassword(password);
   }
 
+  if (locationId !== undefined) {
+    const assignedLocation = await assignedLocationIdForCompany(
+      req.params.companyId,
+      locationId
+    );
+    if (!assignedLocation.ok) {
+      return res.status(400).json({
+        error: "Location must belong to this customer",
+      });
+    }
+    if (assignedLocation.locationId) {
+      person.locationId = assignedLocation.locationId;
+    } else {
+      delete person.locationId;
+    }
+  }
+
   people[personIndex] = person;
   db.companies[companyIndex].people = people;
   await writeDb(db);
@@ -906,10 +1015,11 @@ app.post("/api/companies/:id/assets", requireAgent, async (req, res) => {
     return res.status(404).json({ error: "Company not found" });
   }
 
-  const { name, assetNumber, manufacturerId, assetTypeId, image, personId } = req.body ?? {};
+  const { name, assetNumber, manufacturerId, assetTypeId, image, personId, locationId } =
+    req.body ?? {};
   if (!name?.trim() || !String(assetNumber ?? "").trim() || !manufacturerId || !assetTypeId) {
     return res.status(400).json({
-      error: "name, asset number, manufacturer, and asset type are required",
+      error: "model number, asset number, manufacturer, and asset type are required",
     });
   }
 
@@ -936,6 +1046,13 @@ app.post("/api/companies/:id/assets", requireAgent, async (req, res) => {
     });
   }
 
+  const assignedLocation = await assignedLocationIdForCompany(company.id, locationId);
+  if (!assignedLocation.ok) {
+    return res.status(400).json({
+      error: "Location must belong to this customer",
+    });
+  }
+
   const normalizedNumber = String(assetNumber).trim();
   const duplicate = await findAssetByNumber(company.id, normalizedNumber);
   if (duplicate) {
@@ -954,6 +1071,7 @@ app.post("/api/companies/:id/assets", requireAgent, async (req, res) => {
     assetTypeId: assetType.id,
     image: normalizedImage || "",
     personId: assigned.personId || "",
+    locationId: assignedLocation.locationId || "",
     createdAt: now,
     updatedAt: now,
   });
@@ -967,12 +1085,13 @@ app.patch("/api/companies/:companyId/assets/:assetId", requireAgent, async (req,
     return res.status(404).json({ error: "Asset not found" });
   }
 
-  const { name, assetNumber, manufacturerId, assetTypeId, image, personId } = req.body ?? {};
+  const { name, assetNumber, manufacturerId, assetTypeId, image, personId, locationId } =
+    req.body ?? {};
   const fields = {};
 
   if (name !== undefined) {
     if (!String(name).trim()) {
-      return res.status(400).json({ error: "name is required" });
+      return res.status(400).json({ error: "model number is required" });
     }
     fields.name = String(name).trim();
   }
@@ -1032,6 +1151,19 @@ app.patch("/api/companies/:companyId/assets/:assetId", requireAgent, async (req,
     fields.personId = assigned.personId || "";
   }
 
+  if (locationId !== undefined) {
+    const assignedLocation = await assignedLocationIdForCompany(
+      req.params.companyId,
+      locationId
+    );
+    if (!assignedLocation.ok) {
+      return res.status(400).json({
+        error: "Location must belong to this customer",
+      });
+    }
+    fields.locationId = assignedLocation.locationId || "";
+  }
+
   const updated = await updateAssetRecord(
     req.params.companyId,
     req.params.assetId,
@@ -1048,6 +1180,71 @@ app.delete("/api/companies/:companyId/assets/:assetId", requireAgent, async (req
   res.json({ ok: true });
 });
 
+app.get("/api/companies/:id/locations", requireAgent, async (req, res) => {
+  const company = findCompany(await readDb(), req.params.id);
+  if (!company) {
+    return res.status(404).json({ error: "Company not found" });
+  }
+  res.json(await listCompanyLocations(req.params.id));
+});
+
+app.post("/api/companies/:id/locations", requireAgent, async (req, res) => {
+  const company = findCompany(await readDb(), req.params.id);
+  if (!company) {
+    return res.status(404).json({ error: "Company not found" });
+  }
+
+  const { name, address = "", details = "" } = req.body ?? {};
+  if (!name?.trim()) {
+    return res.status(400).json({ error: "location name is required" });
+  }
+  if (notesBodyTooLarge(details) || notesBodyTooLarge(address)) {
+    return res.status(400).json({ error: "location details are too large" });
+  }
+
+  const now = new Date().toISOString();
+  const location = await insertLocation({
+    id: uuidv4(),
+    companyId: company.id,
+    name: name.trim(),
+    address: String(address ?? "").trim(),
+    details: String(details ?? "").trim(),
+    createdAt: now,
+    updatedAt: now,
+  });
+  res.status(201).json(location);
+});
+
+app.patch("/api/companies/:companyId/locations/:locationId", requireAgent, async (req, res) => {
+  const current = await findLocationById(req.params.companyId, req.params.locationId);
+  if (!current) {
+    return res.status(404).json({ error: "Location not found" });
+  }
+
+  const { name, address, details } = req.body ?? {};
+  if (name !== undefined && !String(name).trim()) {
+    return res.status(400).json({ error: "location name is required" });
+  }
+  if (notesBodyTooLarge(details) || notesBodyTooLarge(address)) {
+    return res.status(400).json({ error: "location details are too large" });
+  }
+
+  const updated = await updateLocationRecord(req.params.companyId, req.params.locationId, {
+    ...(name !== undefined ? { name: String(name).trim() } : {}),
+    ...(address !== undefined ? { address: String(address).trim() } : {}),
+    ...(details !== undefined ? { details: String(details).trim() } : {}),
+  });
+  res.json(updated);
+});
+
+app.delete("/api/companies/:companyId/locations/:locationId", requireAgent, async (req, res) => {
+  const removed = await removeLocation(req.params.companyId, req.params.locationId);
+  if (!removed) {
+    return res.status(404).json({ error: "Location not found" });
+  }
+  res.json({ ok: true });
+});
+
 app.delete("/api/companies/:id", requireAgent, async (req, res) => {
   const db = await readDb();
   const index = db.companies.findIndex((c) => c.id === req.params.id);
@@ -1059,6 +1256,7 @@ app.delete("/api/companies/:id", requireAgent, async (req, res) => {
   const removedTickets = db.tickets.filter((t) => t.companyId === removed.id);
   db.tickets = db.tickets.filter((t) => t.companyId !== removed.id);
   await removeAssetsForCompany(removed.id);
+  await removeLocationsForCompany(removed.id);
   await removeCompany(removed.id);
   await writeDb(db);
 
@@ -1070,22 +1268,44 @@ app.delete("/api/companies/:id", requireAgent, async (req, res) => {
 });
 
 app.get("/api/tickets", async (req, res) => {
-  const { status, q, companyId, priority } = req.query;
+  const { status, q, companyId, priority, mine } = req.query;
   const db = await readDb();
   let tickets = db.tickets.map((t) => enrichTicket(db, t, req.role));
 
   if (req.role === "person") {
-    tickets = tickets.filter((t) => t.companyId === req.person.companyId);
+    if (!req.person?.companyId || !req.person?.id) {
+      return res.json([]);
+    }
+    tickets = tickets.filter((t) => ticketVisibleToPerson(t, req, db));
   } else if (companyId) {
     tickets = tickets.filter((t) => t.companyId === companyId);
   }
 
-  if (status && status !== "all") {
-    tickets = tickets.filter((t) => t.status === status);
+  const mineMode = mineFilterMode(mine);
+  if (mineMode === "only") {
+    tickets = tickets.filter((t) => ticketCreatedByCurrentUser(t, req));
+  } else if (mineMode === "exclude" && req.role === "person") {
+    tickets = tickets.filter((t) => !ticketCreatedByCurrentUser(t, req));
   }
 
-  if (priority && priority !== "all") {
-    tickets = tickets.filter((t) => t.priority === priority);
+  if (status) {
+    const wanted = (Array.isArray(status) ? status : String(status).split(","))
+      .flatMap((value) => String(value).split(","))
+      .map((value) => value.trim())
+      .filter((value) => STATUSES.includes(value));
+    if (wanted.length) {
+      tickets = tickets.filter((t) => wanted.includes(t.status));
+    }
+  }
+
+  if (priority) {
+    const wanted = (Array.isArray(priority) ? priority : String(priority).split(","))
+      .flatMap((value) => String(value).split(","))
+      .map((value) => value.trim())
+      .filter((value) => PRIORITIES.includes(value));
+    if (wanted.length) {
+      tickets = tickets.filter((t) => wanted.includes(t.priority));
+    }
   }
 
   if (q) {
@@ -1114,10 +1334,22 @@ app.get("/api/tickets/:id", async (req, res) => {
   if (!ticket) {
     return res.status(404).json({ error: "Ticket not found" });
   }
-  if (req.role === "person" && ticket.companyId !== req.person.companyId) {
+  if (req.role === "person" && !ticketVisibleToPerson(ticket, req, db)) {
     return res.status(404).json({ error: "Ticket not found" });
   }
   res.json(enrichTicket(db, ticket, req.role));
+});
+
+app.get("/api/tickets/:id/assets", async (req, res) => {
+  const db = await readDb();
+  const ticket = db.tickets.find((t) => t.id === req.params.id);
+  if (!ticket) {
+    return res.status(404).json({ error: "Ticket not found" });
+  }
+  if (req.role === "person" && !ticketVisibleToPerson(ticket, req, db)) {
+    return res.status(404).json({ error: "Ticket not found" });
+  }
+  res.json(await listCompanyAssets(ticket.companyId));
 });
 
 app.post("/api/tickets", async (req, res) => {
@@ -1171,6 +1403,8 @@ app.post("/api/tickets", async (req, res) => {
     description: description.trim(),
     companyId: company.id,
     personId: person.id,
+    ...(req.role === "agent" ? { creatorAgentId: req.agent.id } : {}),
+    ...(req.role === "person" ? { creatorPersonId: req.person.id } : {}),
     priority,
     status: "open",
     createdAt: now,
@@ -1206,7 +1440,8 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
         fieldChangeComment(
           req.agent,
           "status",
-          `Changed the status from ${labelTicketStatus(ticket.status)} to ${labelTicketStatus(status)}`
+          `Changed the status from ${labelTicketStatus(ticket.status)} to ${labelTicketStatus(status)}`,
+          true
         )
       );
       ticket.status = status;
@@ -1224,7 +1459,8 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
         fieldChangeComment(
           req.agent,
           "priority",
-          `Changed the priority from ${labelTicketPriority(ticket.priority)} to ${labelTicketPriority(priority)}`
+          `Changed the priority from ${labelTicketPriority(ticket.priority)} to ${labelTicketPriority(priority)}`,
+          true
         )
       );
       ticket.priority = priority;
@@ -1261,24 +1497,38 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
   res.json(enrichTicket(db, ticket, req.role));
 });
 
-app.post("/api/tickets/:id/comments", async (req, res) => {
-  const { body, kind, callParticipants, customerVisible } = req.body ?? {};
-  if (!body?.trim()) {
-    return res.status(400).json({ error: "body is required" });
+app.delete("/api/tickets/:id", requireAgent, async (req, res) => {
+  const db = await readDb();
+  const index = db.tickets.findIndex((t) => t.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: "Ticket not found" });
   }
 
-  if (notesBodyTooLarge(body)) {
-    return res.status(400).json({ error: "body is too large" });
-  }
+  db.tickets.splice(index, 1);
+  await writeDb(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/tickets/:id/comments", async (req, res) => {
+  const { body, kind, callParticipants, customerVisible, assetId } = req.body ?? {};
 
   const normalizedKind = normalizeUpdateKind(kind, req.role);
   if (!normalizedKind) {
     return res.status(400).json({
       error:
         req.role === "person"
-          ? "kind must be comment or close"
-          : "kind must be comment, call, or close",
+          ? "kind must be comment, close, or asset"
+          : "kind must be comment, call, close, or asset",
     });
+  }
+
+  const trimmedBody = String(body ?? "").trim();
+  if (normalizedKind !== "asset" && normalizedKind !== "call" && !trimmedBody) {
+    return res.status(400).json({ error: "body is required" });
+  }
+
+  if (notesBodyTooLarge(trimmedBody)) {
+    return res.status(400).json({ error: "body is too large" });
   }
 
   const db = await readDb();
@@ -1288,7 +1538,7 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
   }
 
   const ticket = db.tickets[index];
-  if (req.role === "person" && ticket.companyId !== req.person.companyId) {
+  if (req.role === "person" && !ticketVisibleToPerson(ticket, req, db)) {
     return res.status(404).json({ error: "Ticket not found" });
   }
 
@@ -1297,6 +1547,17 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
     normalizedKind === "call"
       ? callParticipantsForTicket(ticket, company, callParticipants)
       : null;
+
+  let asset = null;
+  if (normalizedKind === "asset") {
+    const assetRecord = await findAssetById(ticket.companyId, assetId);
+    if (!assetRecord) {
+      return res.status(400).json({
+        error: "Asset must belong to this customer",
+      });
+    }
+    asset = commentAssetSnapshot(assetRecord);
+  }
 
   const visibleToCustomer =
     req.role === "person" ? true : customerVisible !== false;
@@ -1307,19 +1568,21 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
           id: uuidv4(),
           author: req.person.name,
           kind: normalizedKind,
-          body: body.trim(),
+          body: trimmedBody,
           customerVisible: true,
           createdAt: new Date().toISOString(),
+          ...(asset ? { asset } : {}),
         }
       : {
           id: uuidv4(),
           author: req.agent.name,
           agentId: req.agent.id,
           kind: normalizedKind,
-          body: body.trim(),
+          body: trimmedBody,
           customerVisible: visibleToCustomer,
           createdAt: new Date().toISOString(),
           ...(participants ? { callParticipants: participants } : {}),
+          ...(asset ? { asset } : {}),
         };
 
   db.tickets[index].comments.push(comment);

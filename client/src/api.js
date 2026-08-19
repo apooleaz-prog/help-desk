@@ -204,23 +204,70 @@ export function deleteCompanyAsset(companyId, assetId) {
   });
 }
 
+export function fetchCompanyLocations(companyId) {
+  return request(`/companies/${companyId}/locations`);
+}
+
+export function createCompanyLocation(companyId, payload) {
+  return request(`/companies/${companyId}/locations`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateCompanyLocation(companyId, locationId, payload) {
+  return request(`/companies/${companyId}/locations/${locationId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteCompanyLocation(companyId, locationId) {
+  return request(`/companies/${companyId}/locations/${locationId}`, {
+    method: "DELETE",
+  });
+}
+
 export function fetchTickets({
   status = "all",
   q = "",
   companyId = "",
   priority = "",
+  mine,
 } = {}) {
   const params = new URLSearchParams();
-  if (status && status !== "all") params.set("status", status);
+  const statuses = Array.isArray(status)
+    ? status
+    : String(status || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+  if (statuses.length && !statuses.includes("all")) {
+    params.set("status", statuses.join(","));
+  }
   if (q) params.set("q", q);
   if (companyId) params.set("companyId", companyId);
-  if (priority && priority !== "all") params.set("priority", priority);
+  const priorities = Array.isArray(priority)
+    ? priority
+    : String(priority || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+  if (priorities.length && !priorities.includes("all")) {
+    params.set("priority", priorities.join(","));
+  }
+  if (mine === true || mine === 1 || mine === "1") params.set("mine", "1");
+  else if (mine === false || mine === 0 || mine === "0") params.set("mine", "0");
   const qs = params.toString();
   return request(`/tickets${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchTicket(id) {
   return request(`/tickets/${id}`);
+}
+
+export function fetchTicketAssets(ticketId) {
+  return request(`/tickets/${ticketId}/assets`);
 }
 
 export function createTicket(payload) {
@@ -235,6 +282,10 @@ export function updateTicket(id, payload) {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+export function deleteTicket(id) {
+  return request(`/tickets/${id}`, { method: "DELETE" });
 }
 
 export function addComment(id, payload) {
