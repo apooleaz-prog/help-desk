@@ -206,6 +206,13 @@ const SCHEMA_SQL = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS password_resets (
+    token_hash TEXT PRIMARY KEY,
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    person_id TEXT REFERENCES people(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `;
 
 function loadLegacyJson() {
@@ -425,9 +432,21 @@ function writeSqliteSnapshot(database, data) {
     const savedCompanies = database
       .prepare(`SELECT id, name, details, image FROM companies`)
       .all();
+    let savedResets = [];
+    try {
+      savedResets = database
+        .prepare(
+          `SELECT token_hash AS tokenHash, agent_id AS agentId, person_id AS personId,
+                  expires_at AS expiresAt, created_at AS createdAt
+           FROM password_resets`
+        )
+        .all();
+    } catch {
+      savedResets = [];
+    }
     database.exec(`
       DELETE FROM comments; DELETE FROM tickets; DELETE FROM people;
-      DELETE FROM sessions; DELETE FROM agents;
+      DELETE FROM password_resets; DELETE FROM sessions; DELETE FROM agents;
       DELETE FROM assets; DELETE FROM locations;
     `);
     const insertAgent = database.prepare(
@@ -523,6 +542,30 @@ function writeSqliteSnapshot(database, data) {
         session.agentId ?? null,
         session.personId ?? null,
         session.createdAt
+      );
+    }
+    const agentIds = new Set((data.agents ?? []).map((agent) => agent.id));
+    const personIds = new Set();
+    for (const company of incomingCompanies) {
+      for (const person of company.people ?? []) {
+        if (person?.id) personIds.add(person.id);
+      }
+    }
+    const nowIso = new Date().toISOString();
+    const insertReset = database.prepare(
+      `INSERT INTO password_resets (token_hash, agent_id, person_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    for (const row of savedResets) {
+      if (row.expiresAt && row.expiresAt < nowIso) continue;
+      if (row.agentId && !agentIds.has(row.agentId)) continue;
+      if (row.personId && !personIds.has(row.personId)) continue;
+      insertReset.run(
+        row.tokenHash,
+        row.agentId ?? null,
+        row.personId ?? null,
+        row.expiresAt,
+        row.createdAt
       );
     }
     const companyIds = incomingCompanyIds;
@@ -659,9 +702,21 @@ async function writePgSnapshot(pool, data) {
     const { rows: savedCompanies } = await client.query(
       `SELECT id, name, details, image FROM companies`
     );
+    let savedResets = [];
+    try {
+      savedResets = (
+        await client.query(
+          `SELECT token_hash AS "tokenHash", agent_id AS "agentId", person_id AS "personId",
+                  expires_at AS "expiresAt", created_at AS "createdAt"
+           FROM password_resets`
+        )
+      ).rows;
+    } catch {
+      savedResets = [];
+    }
     await client.query(`
       DELETE FROM comments; DELETE FROM tickets; DELETE FROM people;
-      DELETE FROM sessions; DELETE FROM agents;
+      DELETE FROM password_resets; DELETE FROM sessions; DELETE FROM agents;
       DELETE FROM assets; DELETE FROM locations;
     `);
     for (const agent of data.agents ?? []) {
@@ -763,6 +818,30 @@ async function writePgSnapshot(pool, data) {
       await client.query(
         `INSERT INTO sessions (token, agent_id, person_id, created_at) VALUES ($1,$2,$3,$4)`,
         [session.token, session.agentId ?? null, session.personId ?? null, session.createdAt]
+      );
+    }
+    const agentIds = new Set((data.agents ?? []).map((agent) => agent.id));
+    const personIds = new Set();
+    for (const company of incomingCompanies) {
+      for (const person of company.people ?? []) {
+        if (person?.id) personIds.add(person.id);
+      }
+    }
+    const nowIso = new Date().toISOString();
+    for (const row of savedResets) {
+      if (row.expiresAt && row.expiresAt < nowIso) continue;
+      if (row.agentId && !agentIds.has(row.agentId)) continue;
+      if (row.personId && !personIds.has(row.personId)) continue;
+      await client.query(
+        `INSERT INTO password_resets (token_hash, agent_id, person_id, expires_at, created_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [
+          row.tokenHash,
+          row.agentId ?? null,
+          row.personId ?? null,
+          row.expiresAt,
+          row.createdAt,
+        ]
       );
     }
     const companyIds = incomingCompanyIds;
@@ -1908,6 +1987,89 @@ function enrichTicket(db, ticket, role) {
   };
 }
 
+function mapPasswordReset(row) {
+  if (!row) return null;
+  return {
+    tokenHash: row.tokenHash,
+    agentId: row.agentId || null,
+    personId: row.personId || null,
+    expiresAt: row.expiresAt,
+    createdAt: row.createdAt,
+  };
+}
+
+async function replacePasswordReset({
+  tokenHash,
+  agentId,
+  personId,
+  expiresAt,
+  createdAt,
+}) {
+  await ensureReady();
+  if (usePostgres()) {
+    const pool = await getPg();
+    if (agentId) {
+      await pool.query(`DELETE FROM password_resets WHERE agent_id = $1`, [agentId]);
+    }
+    if (personId) {
+      await pool.query(`DELETE FROM password_resets WHERE person_id = $1`, [personId]);
+    }
+    await pool.query(
+      `INSERT INTO password_resets (token_hash, agent_id, person_id, expires_at, created_at)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [tokenHash, agentId ?? null, personId ?? null, expiresAt, createdAt]
+    );
+    return;
+  }
+  const database = getSqlite();
+  if (agentId) {
+    database.prepare(`DELETE FROM password_resets WHERE agent_id = ?`).run(agentId);
+  }
+  if (personId) {
+    database.prepare(`DELETE FROM password_resets WHERE person_id = ?`).run(personId);
+  }
+  database
+    .prepare(
+      `INSERT INTO password_resets (token_hash, agent_id, person_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(tokenHash, agentId ?? null, personId ?? null, expiresAt, createdAt);
+}
+
+async function findPasswordReset(tokenHash) {
+  await ensureReady();
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(
+      `SELECT token_hash AS "tokenHash", agent_id AS "agentId", person_id AS "personId",
+              expires_at AS "expiresAt", created_at AS "createdAt"
+       FROM password_resets WHERE token_hash = $1`,
+      [tokenHash]
+    );
+    return rows[0] ? mapPasswordReset(rows[0]) : null;
+  }
+  const row = getSqlite()
+    .prepare(
+      `SELECT token_hash AS tokenHash, agent_id AS agentId, person_id AS personId,
+              expires_at AS expiresAt, created_at AS createdAt
+       FROM password_resets WHERE token_hash = ?`
+    )
+    .get(tokenHash);
+  return row ? mapPasswordReset(row) : null;
+}
+
+async function deletePasswordReset(tokenHash) {
+  await ensureReady();
+  if (usePostgres()) {
+    await (await getPg()).query(`DELETE FROM password_resets WHERE token_hash = $1`, [
+      tokenHash,
+    ]);
+    return;
+  }
+  getSqlite().prepare(`DELETE FROM password_resets WHERE token_hash = ?`).run(tokenHash);
+}
+
 export {
   STATUSES,
   PRIORITIES,
@@ -1955,4 +2117,7 @@ export {
   countAssetsByCompany,
   countLocationsByCompany,
   removeCompany,
+  replacePasswordReset,
+  findPasswordReset,
+  deletePasswordReset,
 };

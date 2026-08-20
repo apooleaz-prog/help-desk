@@ -112,6 +112,16 @@ async function destroySessionsForAgent(agentId) {
   await writeDb(db);
 }
 
+async function destroySessionsForPerson(personId) {
+  const db = await readDb();
+  db.sessions = db.sessions.filter((s) => s.personId !== personId);
+  await writeDb(db);
+}
+
+function hashResetToken(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
 export {
   hashPassword,
   verifyPassword,
@@ -120,5 +130,8 @@ export {
   createSession,
   destroySession,
   destroySessionsForAgent,
+  destroySessionsForPerson,
+  createToken,
+  hashResetToken,
   getBearerToken,
 };

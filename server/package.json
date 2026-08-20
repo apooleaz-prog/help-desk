@@ -12,9 +12,11 @@
     "db:shell": "sqlite3 data/helpdesk.db"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1113.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "nodemailer": "^9.0.5",
     "pg": "^8.23.0",
     "uuid": "^11.1.0"
   }

@@ -5,14 +5,23 @@ import { fileURLToPath } from "node:url";
 import { v4 as uuidv4 } from "uuid";
 import {
   createSession,
+  createToken,
   destroySession,
   destroySessionsForAgent,
+  destroySessionsForPerson,
   getBearerToken,
   hashPassword,
+  hashResetToken,
   requireAgent,
   requireAuth,
   verifyPassword,
 } from "./auth.js";
+import { passwordResetEmail, sendMail } from "./mail.js";
+import {
+  passwordUpdatedPage,
+  resetPasswordPage,
+  sendHtml,
+} from "./passwordPages.js";
 import {
   DEFAULT_AGENT,
   PRIORITIES,
@@ -23,6 +32,10 @@ import {
   findCompany,
   findPerson,
   findPersonByEmail,
+  findPersonById,
+  findPasswordReset,
+  replacePasswordReset,
+  deletePasswordReset,
   publicAgent,
   publicCompany,
   publicPerson,
@@ -65,7 +78,18 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
+app.use((req, res, next) => {
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  if (host === "www.fivewitsit.com" && !req.path.startsWith("/api")) {
+    return res.redirect(301, `https://fivewitsit.com${req.originalUrl}`);
+  }
+  next();
+});
 app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: false, limit: "10mb" }));
 
 const PERSON_IMAGE_MAX = 2_000_000;
 const PERSON_IMAGE_RE = /^data:image\/(jpeg|jpg|png|gif|webp);base64,/i;
@@ -269,7 +293,8 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body ?? {};
+  const email = req.body?.email ?? req.body?.username;
+  const { password } = req.body ?? {};
   if (!email?.trim() || !password) {
     return res.status(400).json({ error: "email and password are required" });
   }
@@ -299,6 +324,187 @@ app.post("/api/auth/login", async (req, res) => {
   });
 });
 
+const RESET_OK = {
+  ok: true,
+  message: "If that email is in the system, we sent a reset link.",
+};
+const RESET_INVALID = "This reset link is invalid or has expired";
+const RESET_TTL_MS = 60 * 60 * 1000;
+
+function appBaseUrl(req) {
+  const configured = String(process.env.APP_URL || "").trim().replace(/\/$/, "");
+  if (configured) return configured;
+  const origin = String(req.headers.origin || "").trim().replace(/\/$/, "");
+  if (origin) return origin;
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http")
+    .split(",")[0]
+    .trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost:3001")
+    .split(",")[0]
+    .trim();
+  return `${proto}://${host}`;
+}
+
+function resetTokenRowValid(row) {
+  return Boolean(row?.expiresAt && row.expiresAt > new Date().toISOString());
+}
+
+function isFormPost(req) {
+  return Boolean(req.is("application/x-www-form-urlencoded"));
+}
+
+function sendResetResult(req, res, { status = 200, error, email, token } = {}) {
+  if (isFormPost(req)) {
+    if (error) {
+      const params = new URLSearchParams();
+      if (token) params.set("token", token);
+      params.set("resetError", error);
+      return res.redirect(303, `/reset-password?${params.toString()}`);
+    }
+    const params = new URLSearchParams();
+    if (email) params.set("email", email);
+    const qs = params.toString();
+    return res.redirect(303, qs ? `/password-updated?${qs}` : "/password-updated");
+  }
+  if (error) return res.status(status).json({ error });
+  return res.json({ ok: true, email });
+}
+
+async function emailForResetRow(row) {
+  const db = await readDb();
+  if (row?.agentId) {
+    return db.agents.find((a) => a.id === row.agentId)?.email || "";
+  }
+  if (row?.personId) {
+    return findPersonById(db, row.personId)?.person?.email || "";
+  }
+  return "";
+}
+
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  if (!email) {
+    return res.status(400).json({ error: "email is required" });
+  }
+
+  const db = await readDb();
+  const agent = db.agents.find((a) => a.email.toLowerCase() === email);
+  let account = null;
+  if (agent) {
+    account = { kind: "agent", id: agent.id, email: agent.email, name: agent.name };
+  } else {
+    const match = findPersonByEmail(db, email);
+    if (match) {
+      account = {
+        kind: "person",
+        id: match.person.id,
+        email: match.person.email,
+        name: match.person.name,
+      };
+    }
+  }
+
+  if (account) {
+    const rawToken = createToken();
+    const now = new Date();
+    await replacePasswordReset({
+      tokenHash: hashResetToken(rawToken),
+      agentId: account.kind === "agent" ? account.id : null,
+      personId: account.kind === "person" ? account.id : null,
+      expiresAt: new Date(now.getTime() + RESET_TTL_MS).toISOString(),
+      createdAt: now.toISOString(),
+    });
+    const resetUrl = `${appBaseUrl(req)}/reset-password?token=${encodeURIComponent(rawToken)}`;
+    try {
+      await sendMail({
+        to: account.email,
+        ...passwordResetEmail({ name: account.name, resetUrl }),
+      });
+    } catch (err) {
+      console.error("Failed to send password reset email:", err);
+    }
+  }
+
+  res.json(RESET_OK);
+});
+
+app.get("/api/auth/reset-password", async (req, res) => {
+  const token = String(req.query.token ?? "");
+  if (!token) {
+    return res.status(400).json({ error: RESET_INVALID });
+  }
+  const row = await findPasswordReset(hashResetToken(token));
+  if (!resetTokenRowValid(row)) {
+    return res.status(400).json({ error: RESET_INVALID });
+  }
+  res.json({ ok: true, email: await emailForResetRow(row) });
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  const token = String(req.body?.token ?? "");
+  const password = req.body?.password;
+  const confirm = req.body?.confirm;
+  if (!token || !password) {
+    return sendResetResult(req, res, {
+      status: 400,
+      error: "token and password are required",
+      token,
+    });
+  }
+  if (confirm !== undefined && String(confirm) !== String(password)) {
+    return sendResetResult(req, res, {
+      status: 400,
+      error: "Passwords do not match",
+      token,
+    });
+  }
+  if (String(password).length < 6) {
+    return sendResetResult(req, res, {
+      status: 400,
+      error: "password must be at least 6 characters",
+      token,
+    });
+  }
+
+  const tokenHash = hashResetToken(token);
+  const row = await findPasswordReset(tokenHash);
+  if (!resetTokenRowValid(row)) {
+    if (row) await deletePasswordReset(tokenHash);
+    return sendResetResult(req, res, { status: 400, error: RESET_INVALID, token });
+  }
+
+  const db = await readDb();
+  let accountEmail = "";
+  if (row.agentId) {
+    const agent = db.agents.find((a) => a.id === row.agentId);
+    if (!agent) {
+      await deletePasswordReset(tokenHash);
+      return sendResetResult(req, res, { status: 400, error: RESET_INVALID, token });
+    }
+    accountEmail = agent.email;
+    agent.passwordHash = hashPassword(password);
+    agent.updatedAt = new Date().toISOString();
+    await writeDb(db);
+    await destroySessionsForAgent(agent.id);
+  } else if (row.personId) {
+    const match = findPersonById(db, row.personId);
+    if (!match) {
+      await deletePasswordReset(tokenHash);
+      return sendResetResult(req, res, { status: 400, error: RESET_INVALID, token });
+    }
+    accountEmail = match.person.email;
+    match.person.passwordHash = hashPassword(password);
+    await writeDb(db);
+    await destroySessionsForPerson(match.person.id);
+  } else {
+    await deletePasswordReset(tokenHash);
+    return sendResetResult(req, res, { status: 400, error: RESET_INVALID, token });
+  }
+
+  await deletePasswordReset(tokenHash);
+  return sendResetResult(req, res, { email: accountEmail });
+});
+
 app.post("/api/auth/logout", async (req, res) => {
   const token = getBearerToken(req);
   if (token) {
@@ -315,7 +521,12 @@ app.get("/api/auth/me", requireAuth, async (req, res) => {
 });
 
 app.use("/api", (req, res, next) => {
-  if (req.path === "/health" || req.path === "/auth/login") {
+  if (
+    req.path === "/health" ||
+    req.path === "/auth/login" ||
+    req.path === "/auth/forgot-password" ||
+    req.path === "/auth/reset-password"
+  ) {
     return next();
   }
   if (req.path === "/auth/logout" || req.path === "/auth/me") {
@@ -1605,6 +1816,65 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
     comment,
     ticket: enrichTicket(db, db.tickets[index], req.role),
   });
+});
+
+app.get("/.well-known/change-password", (_req, res) => {
+  res.redirect(302, "/");
+});
+
+app.get("/", (req, res, next) => {
+  const token = String(req.query.token ?? "").trim();
+  if (!token) return next();
+  const params = new URLSearchParams();
+  params.set("token", token);
+  const resetError = String(req.query.resetError ?? "").trim();
+  if (resetError) params.set("resetError", resetError);
+  return res.redirect(302, `/reset-password?${params.toString()}`);
+});
+
+app.get("/reset-password", async (req, res) => {
+  const token = String(req.query.token ?? "").trim();
+  const resetError = String(req.query.resetError ?? "").trim();
+  if (!token) {
+    return sendHtml(
+      res,
+      resetPasswordPage({
+        token: "",
+        email: "",
+        error: resetError || RESET_INVALID,
+      }),
+      400
+    );
+  }
+  const row = await findPasswordReset(hashResetToken(token));
+  if (!resetTokenRowValid(row)) {
+    return sendHtml(
+      res,
+      resetPasswordPage({
+        token,
+        email: "",
+        error: resetError || RESET_INVALID,
+      }),
+      400
+    );
+  }
+  return sendHtml(
+    res,
+    resetPasswordPage({
+      token,
+      email: await emailForResetRow(row),
+      error: resetError,
+    })
+  );
+});
+
+app.get("/password-updated", (req, res) => {
+  sendHtml(
+    res,
+    passwordUpdatedPage({
+      email: String(req.query.email ?? "").trim(),
+    })
+  );
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

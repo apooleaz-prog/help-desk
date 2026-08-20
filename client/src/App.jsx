@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   AuthError,
   addComment,
@@ -26,6 +27,7 @@ import {
   fetchCompanyLocations,
   fetchManufacturers,
   fetchMe,
+  fetchResetPassword,
   fetchStockImage,
   fetchTicket,
   fetchTicketAssets,
@@ -33,6 +35,8 @@ import {
   getToken,
   login,
   logout,
+  requestPasswordReset,
+  resetPassword,
   setToken,
   updateAgent,
   updateAssetType,
@@ -151,6 +155,7 @@ function assetSearchText(asset) {
 }
 
 function CommentAssetCard({ asset }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
   if (!asset) return null;
   const title = asset.name || asset.assetType?.name || "Asset";
   const typeName =
@@ -175,7 +180,11 @@ function CommentAssetCard({ asset }) {
         <div className="comment-asset-head">
           <strong>{title}</strong>
           {asset.assetNumber ? (
-            <span className="comment-asset-number">{asset.assetNumber}</span>
+            <AssetNumberButton
+              number={asset.assetNumber}
+              className="comment-asset-number"
+              onClick={() => setPreviewOpen(true)}
+            />
           ) : null}
         </div>
         {specs ? (
@@ -193,6 +202,9 @@ function CommentAssetCard({ asset }) {
           </span>
         ) : null}
       </div>
+      {previewOpen ? (
+        <AssetPreviewDialog asset={asset} onClose={() => setPreviewOpen(false)} />
+      ) : null}
     </div>
   );
 }
@@ -329,6 +341,45 @@ function notesPreview(text) {
     .map((part) => part.value.replace(/\s+/g, " ").trim())
     .filter(Boolean)
     .join(" ");
+}
+
+function randomIndex(max) {
+  const cap = Math.floor(256 / max) * max;
+  const bytes = new Uint8Array(1);
+  let value = 256;
+  while (value >= cap) {
+    crypto.getRandomValues(bytes);
+    value = bytes[0];
+  }
+  return value % max;
+}
+
+function generatePassword(length = 16) {
+  const lower = "abcdefghijkmnopqrstuvwxyz";
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digits = "23456789";
+  const symbols = "!@#$%^&*-_?";
+  const all = lower + upper + digits + symbols;
+  const pick = (set) => set[randomIndex(set.length)];
+  const chars = [pick(lower), pick(upper), pick(digits), pick(symbols)];
+  while (chars.length < length) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = randomIndex(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+const RESET_EMAIL_KEY = "deskline_reset_email";
+
+function isResetLocation() {
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  if (path === "/reset-password") return true;
+  return path === "/" && new URLSearchParams(window.location.search).has("token");
+}
+
+function resetTokenFromLocation() {
+  return new URLSearchParams(window.location.search).get("token") || "";
 }
 
 function formatDate(iso) {
@@ -586,6 +637,20 @@ function App() {
   const mainRef = useRef(null);
   const listScrollRef = useRef(0);
   const restoreListRef = useRef(false);
+  const [authScreen, setAuthScreen] = useState(() =>
+    isResetLocation() ? "reset" : "login"
+  );
+  const [resetToken] = useState(() =>
+    isResetLocation() ? resetTokenFromLocation() : ""
+  );
+  const [loginNotice, setLoginNotice] = useState("");
+  const [prefillEmail] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = String(params.get("email") || params.get("username") || "").trim();
+    const stored = sessionStorage.getItem(RESET_EMAIL_KEY) || "";
+    if (stored) sessionStorage.removeItem(RESET_EMAIL_KEY);
+    return fromQuery || stored;
+  });
 
   const isPerson = role === "person";
   const isAgent = role === "agent";
@@ -617,6 +682,16 @@ function App() {
     }
     return false;
   }
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("passwordReset") !== "1") return undefined;
+    setLoginNotice("Password updated. Sign in with your new password.");
+    params.delete("passwordReset");
+    const qs = params.toString();
+    window.history.replaceState({}, "", qs ? `/?${qs}` : "/");
+    return undefined;
+  }, []);
 
   useEffect(() => {
     const token = getToken();
@@ -1283,6 +1358,19 @@ function App() {
     }
   }
 
+  if (authScreen === "reset") {
+    return (
+      <div className="app">
+        <ResetPasswordView
+          token={resetToken}
+          onBackToLogin={() => {
+            window.location.replace("/");
+          }}
+        />
+      </div>
+    );
+  }
+
   if (authChecking) {
     return (
       <div className="app">
@@ -1294,7 +1382,13 @@ function App() {
   if (!signedIn) {
     return (
       <div className="app">
-        <LoginView saving={saving} error={error} onLogin={handleLogin} />
+        <LoginView
+          saving={saving}
+          error={error}
+          notice={loginNotice}
+          prefillEmail={prefillEmail}
+          onLogin={handleLogin}
+        />
       </div>
     );
   }
@@ -1943,6 +2037,129 @@ function ManufacturerRef({ manufacturer, size = "sm", className = "" }) {
   );
 }
 
+function AssetNumberButton({ number, className = "", onClick }) {
+  if (!number) return null;
+  return (
+    <button
+      type="button"
+      className={className}
+      aria-label={`View asset ${number}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick?.(event);
+      }}
+    >
+      {number}
+    </button>
+  );
+}
+
+function assetPreviewRows(asset) {
+  const manufacturer = manufacturerDisplay(asset);
+  const typeName = asset.assetType?.name || asset.assetTypeName || "";
+  const person = asset.person || (asset.personName ? { name: asset.personName } : null);
+  const locationName = asset.location?.name || asset.locationName || "";
+  const locationAddress = asset.location?.address || "";
+  const rows = [
+    { label: "Asset number", value: asset.assetNumber || "", kind: "number" },
+    { label: "Model number", value: asset.name || "" },
+    { label: "Type", value: typeName },
+    { label: "Manufacturer", value: manufacturer, kind: "manufacturer" },
+    { label: "Assigned to", value: person, kind: "person" },
+    { label: "Location", value: locationName },
+    { label: "Address", value: locationAddress },
+  ];
+  if (asset.createdAt) {
+    rows.push({ label: "Created", value: formatDate(asset.createdAt) });
+  }
+  if (asset.updatedAt) {
+    rows.push({ label: "Updated", value: formatDate(asset.updatedAt) });
+  }
+  return rows;
+}
+
+function AssetPreviewDialog({ asset, onClose }) {
+  useEffect(() => {
+    function onKey(event) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  if (!asset) return null;
+  const title = asset.name || asset.assetType?.name || asset.assetTypeName || "Asset";
+  const rows = assetPreviewRows(asset);
+
+  return createPortal(
+    <div className="asset-preview-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="asset-preview-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="asset-preview-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="asset-preview-head">
+          <div className="company-card-identity">
+            <PersonAvatar
+              name={title}
+              image={asset.image || asset.assetType?.image}
+              size="lg"
+              variant="asset"
+            />
+            <div>
+              <h2 id="asset-preview-title">{title}</h2>
+              {asset.assetNumber ? (
+                <span className="asset-number">{asset.assetNumber}</span>
+              ) : null}
+            </div>
+          </div>
+          <CancelIconButton label="Cancel" onClick={onClose} />
+        </div>
+        <dl className="asset-preview-fields">
+          {rows.map((row) => {
+            const empty =
+              row.kind === "manufacturer"
+                ? !row.value?.name
+                : row.kind === "person"
+                  ? !row.value?.name
+                  : !row.value;
+            return (
+              <div key={row.label} className="asset-preview-row">
+                <dt>{row.label}</dt>
+                <dd>
+                  {empty ? (
+                    <span className="muted">None</span>
+                  ) : row.kind === "number" ? (
+                    <span className="asset-number">{row.value}</span>
+                  ) : row.kind === "manufacturer" ? (
+                    <ManufacturerRef manufacturer={row.value} />
+                  ) : row.kind === "person" ? (
+                    <span className="asset-preview-person">
+                      {row.value.image ? (
+                        <PersonAvatar
+                          name={row.value.name}
+                          image={row.value.image}
+                          size="sm"
+                        />
+                      ) : null}
+                      {row.value.name}
+                    </span>
+                  ) : (
+                    row.value
+                  )}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 function PersonAvatar({ name = "", image, size = "md", variant = "person" }) {
   const initials = name
     .split(/\s+/)
@@ -2467,7 +2684,12 @@ function NotesField({
   );
 }
 
-function LoginView({ saving, error, onLogin }) {
+function LoginView({ saving, error, notice, prefillEmail, onLogin }) {
+  const [mode, setMode] = useState("login");
+  const [forgotSaving, setForgotSaving] = useState(false);
+  const [forgotError, setForgotError] = useState("");
+  const [forgotEmail, setForgotEmail] = useState("");
+
   function handleSubmit(e) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
@@ -2475,6 +2697,28 @@ function LoginView({ saving, error, onLogin }) {
       email: String(data.get("username") || "").trim(),
       password: String(data.get("password") || ""),
     });
+  }
+
+  async function handleForgot(e) {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    const email = String(data.get("email") || "").trim();
+    setForgotEmail(email);
+    setForgotSaving(true);
+    setForgotError("");
+    try {
+      await requestPasswordReset(email);
+      setMode("sent");
+    } catch (err) {
+      setForgotError(err.message);
+    } finally {
+      setForgotSaving(false);
+    }
+  }
+
+  function showLogin() {
+    setMode("login");
+    setForgotError("");
   }
 
   return (
@@ -2489,53 +2733,342 @@ function LoginView({ saving, error, onLogin }) {
             />
             <div className="login-head-copy">
               <p className="login-brand">Help Desk</p>
-              <h1>Sign in</h1>
+              <h1>
+                {mode === "login"
+                  ? "Sign in"
+                  : mode === "sent"
+                    ? "Check your email"
+                    : "Forgot password"}
+              </h1>
             </div>
           </div>
-          <p className="muted">Use your agent or customer contact account.</p>
+          <p className="muted">
+            {mode === "login"
+              ? "Use your agent or customer contact account."
+              : mode === "sent"
+                ? "If that email is in the system, we sent a reset link."
+                : "Enter your email and we’ll send a reset link if it matches an account."}
+          </p>
+        </div>
+      </div>
+
+      {mode === "login" && notice && !error && (
+        <div className="banner success login-error">{notice}</div>
+      )}
+      {mode === "login" && error && <div className="banner error login-error">{error}</div>}
+      {mode !== "login" && forgotError && (
+        <div className="banner error login-error">{forgotError}</div>
+      )}
+
+      {mode === "login" && (
+        <form
+          className="form"
+          method="post"
+          action="/api/auth/login"
+          autoComplete="on"
+          onSubmit={handleSubmit}
+        >
+          <label htmlFor="login-username">
+            Email
+            <input
+              required
+              id="login-username"
+              name="username"
+              type="email"
+              autoComplete="username"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck="false"
+              disabled={saving}
+              defaultValue={prefillEmail || ""}
+            />
+          </label>
+          <label htmlFor="login-password">
+            Password
+            <input
+              required
+              id="login-password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              disabled={saving}
+            />
+          </label>
+          <div className="form-actions login-actions">
+            <button
+              type="button"
+              className="login-forgot"
+              onClick={() => {
+                setMode("forgot");
+                setForgotError("");
+              }}
+            >
+              Forgot password?
+            </button>
+            <button type="submit" className="btn primary" disabled={saving}>
+              {saving ? "Signing in…" : "Sign in"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {mode === "forgot" && (
+        <form className="form" onSubmit={handleForgot}>
+          <label htmlFor="forgot-email">
+            Email
+            <input
+              required
+              id="forgot-email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck="false"
+              disabled={forgotSaving}
+              defaultValue={forgotEmail}
+            />
+          </label>
+          <div className="form-actions login-actions">
+            <button type="button" className="login-forgot" onClick={showLogin}>
+              Back to sign in
+            </button>
+            <button type="submit" className="btn primary" disabled={forgotSaving}>
+              {forgotSaving ? "Sending…" : "Send reset link"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {mode === "sent" && (
+        <div className="form">
+          <p className="login-sent">
+            Check {forgotEmail ? <strong>{forgotEmail}</strong> : "your inbox"} for a
+            link to choose a new password. It expires in 1 hour.
+          </p>
+          <div className="form-actions login-actions">
+            <button type="button" className="login-forgot" onClick={showLogin}>
+              Back to sign in
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ResetPasswordView({ token, onBackToLogin }) {
+  const [checking, setChecking] = useState(true);
+  const [valid, setValid] = useState(false);
+  const [error, setError] = useState(
+    () => new URLSearchParams(window.location.search).get("resetError") || ""
+  );
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [email, setEmail] = useState("");
+  const [reveal, setReveal] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!token) return undefined;
+    if (window.location.pathname === "/reset-password") return undefined;
+    const params = new URLSearchParams();
+    params.set("token", token);
+    const error = new URLSearchParams(window.location.search).get("resetError");
+    if (error) params.set("resetError", error);
+    window.location.replace(`/reset-password?${params.toString()}`);
+    return undefined;
+  }, [token]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!token) {
+      setChecking(false);
+      setValid(false);
+      setError("This reset link is invalid or has expired");
+      return undefined;
+    }
+    fetchResetPassword(token)
+      .then((data) => {
+        if (!cancelled) {
+          setValid(true);
+          setEmail(String(data.email || "").trim());
+          setError("");
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setValid(false);
+          setError(err.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  function fillGeneratedPassword() {
+    const next = generatePassword();
+    setPassword(next);
+    setConfirm(next);
+    setReveal(true);
+    setCopied(false);
+    setError("");
+  }
+
+  async function copyGeneratedPassword() {
+    if (!password) return;
+    try {
+      await navigator.clipboard.writeText(password);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  function handleSubmit(e) {
+    if (password !== confirm) {
+      e.preventDefault();
+      setError("Passwords do not match");
+      return;
+    }
+    if (String(password).length < 6) {
+      e.preventDefault();
+      setError("password must be at least 6 characters");
+    }
+  }
+
+  return (
+    <section className="panel narrow login-panel">
+      <div className="panel-head">
+        <div>
+          <div className="login-head">
+            <img
+              className="login-logo"
+              src="/five-wits-logo.png?v=2"
+              alt="Five Wits"
+            />
+            <div className="login-head-copy">
+              <p className="login-brand">Help Desk</p>
+              <h1>Reset password</h1>
+            </div>
+          </div>
+          <p className="muted">
+            {checking
+              ? "Checking this reset link…"
+              : valid
+                ? "Choose a new password for your account."
+                : "This reset link can’t be used."}
+          </p>
         </div>
       </div>
 
       {error && <div className="banner error login-error">{error}</div>}
 
-      <form
-        className="form"
-        method="post"
-        action="/api/auth/login"
-        autoComplete="on"
-        onSubmit={handleSubmit}
-      >
-        <label htmlFor="login-username">
-          Email
-          <input
-            required
-            id="login-username"
-            name="username"
-            type="email"
-            autoComplete="username"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck="false"
-            disabled={saving}
-          />
-        </label>
-        <label htmlFor="login-password">
-          Password
-          <input
-            required
-            id="login-password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            disabled={saving}
-          />
-        </label>
-        <div className="form-actions">
-          <button type="submit" className="btn primary" disabled={saving}>
-            {saving ? "Signing in…" : "Sign in"}
-          </button>
+      {valid && (
+        <form
+          className="form"
+          method="post"
+          action="/api/auth/reset-password"
+          autoComplete="on"
+          onSubmit={handleSubmit}
+        >
+          <input type="hidden" name="token" value={token} />
+          <label htmlFor="username">
+            Email
+            <input
+              id="username"
+              name="username"
+              type="email"
+              autoComplete="username"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck="false"
+              required
+              defaultValue={email}
+              key={email || "email"}
+            />
+          </label>
+          <label htmlFor="reset-password">
+            <span className="reset-password-label">
+              New password
+              <span className="reset-password-tools">
+                <button
+                  type="button"
+                  className="login-forgot"
+                  onClick={fillGeneratedPassword}
+                >
+                  Generate password
+                </button>
+                {reveal && password && (
+                  <button
+                    type="button"
+                    className="login-forgot"
+                    onClick={copyGeneratedPassword}
+                  >
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                )}
+              </span>
+            </span>
+            <input
+              required
+              id="reset-password"
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              minLength={6}
+              value={password}
+              spellCheck="false"
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setCopied(false);
+              }}
+            />
+          </label>
+          {reveal && password && (
+            <p className="reset-password-hint">
+              Copy this password, then save it when Google asks.{" "}
+              <code className="reset-password-value">{password}</code>
+            </p>
+          )}
+          <label htmlFor="reset-confirm">
+            Confirm password
+            <input
+              required
+              id="reset-confirm"
+              name="confirm"
+              type="password"
+              autoComplete="new-password"
+              minLength={6}
+              value={confirm}
+              spellCheck="false"
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          </label>
+          <div className="form-actions login-actions">
+            <button type="button" className="login-forgot" onClick={onBackToLogin}>
+              Back to sign in
+            </button>
+            <button type="submit" className="btn primary">
+              Update password
+            </button>
+          </div>
+        </form>
+      )}
+
+      {!checking && !valid && (
+        <div className="form">
+          <div className="form-actions login-actions">
+            <button type="button" className="login-forgot" onClick={onBackToLogin}>
+              Back to sign in
+            </button>
+          </div>
         </div>
-      </form>
+      )}
     </section>
   );
 }
@@ -3625,6 +4158,7 @@ function CompanyAssetsPanel({
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(blank);
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [previewAsset, setPreviewAsset] = useState(null);
   const listRef = useRef(null);
   useCollapseMiddles(listRef, [assets, editingId, viewingId]);
   const viewingAsset =
@@ -4043,7 +4577,11 @@ function CompanyAssetsPanel({
                   </h4>
                   <div className="person-detail-meta">
                     {viewingAsset.assetNumber ? (
-                      <span>{viewingAsset.assetNumber}</span>
+                      <AssetNumberButton
+                        number={viewingAsset.assetNumber}
+                        className="asset-number"
+                        onClick={() => setPreviewAsset(viewingAsset)}
+                      />
                     ) : null}
                     {viewingAsset.assetType?.name ? (
                       <span className="muted">{viewingAsset.assetType.name}</span>
@@ -4088,39 +4626,45 @@ function CompanyAssetsPanel({
             const assigned = [asset.person?.name, asset.location?.name].filter(Boolean);
             return (
             <li key={asset.id}>
-              <button
-                type="button"
-                className="asset-row"
-                onClick={() => openAsset(asset)}
-              >
-                <PersonAvatar
-                  name={title}
-                  image={asset.image || asset.assetType?.image}
-                  size="md"
-                  variant="asset"
-                />
-                <div className="asset-row-text">
-                  <div className="asset-row-head">
-                    <strong>{title}</strong>
-                    {asset.assetNumber ? (
-                      <span className="asset-row-number">{asset.assetNumber}</span>
+              <div className="asset-row">
+                <button
+                  type="button"
+                  className="asset-row-main"
+                  onClick={() => openAsset(asset)}
+                >
+                  <PersonAvatar
+                    name={title}
+                    image={asset.image || asset.assetType?.image}
+                    size="md"
+                    variant="asset"
+                  />
+                  <div className="asset-row-text">
+                    <div className="asset-row-head">
+                      <strong>{title}</strong>
+                    </div>
+                    {typeName || asset.manufacturer?.name ? (
+                      <span className="muted asset-row-meta">
+                        {typeName ? <span>{typeName}</span> : null}
+                        {asset.manufacturer?.name ? (
+                          <ManufacturerRef manufacturer={asset.manufacturer} />
+                        ) : null}
+                      </span>
+                    ) : null}
+                    {assigned.length ? (
+                      <span className="muted asset-row-assign">
+                        {assigned.join(" · ")}
+                      </span>
                     ) : null}
                   </div>
-                  {typeName || asset.manufacturer?.name ? (
-                    <span className="muted asset-row-meta">
-                      {typeName ? <span>{typeName}</span> : null}
-                      {asset.manufacturer?.name ? (
-                        <ManufacturerRef manufacturer={asset.manufacturer} />
-                      ) : null}
-                    </span>
-                  ) : null}
-                  {assigned.length ? (
-                    <span className="muted asset-row-assign">
-                      {assigned.join(" · ")}
-                    </span>
-                  ) : null}
-                </div>
-              </button>
+                </button>
+                {asset.assetNumber ? (
+                  <AssetNumberButton
+                    number={asset.assetNumber}
+                    className="asset-row-number"
+                    onClick={() => setPreviewAsset(asset)}
+                  />
+                ) : null}
+              </div>
             </li>
             );
           })}
@@ -4145,7 +4689,12 @@ function CompanyAssetsPanel({
             <p id="delete-asset-desc">
               Remove{" "}
               <strong>{pendingDelete.name || pendingDelete.assetType?.name}</strong>
-              {pendingDelete.assetNumber ? ` (${pendingDelete.assetNumber})` : ""}?
+              {pendingDelete.assetNumber ? (
+                <>
+                  {" "}
+                  (<span className="asset-number">{pendingDelete.assetNumber}</span>)
+                </>
+              ) : null}?
             </p>
             <div className="form-actions">
               <CancelIconButton
@@ -4164,6 +4713,13 @@ function CompanyAssetsPanel({
           </div>
         </div>
       )}
+
+      {previewAsset ? (
+        <AssetPreviewDialog
+          asset={previewAsset}
+          onClose={() => setPreviewAsset(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -39,7 +39,13 @@ async function request(path, options = {}) {
 
   const data = await res.json().catch(() => ({}));
 
-  if (res.status === 401 && path !== "/auth/login") {
+  const requestPath = path.split("?")[0];
+  const publicAuthPaths = new Set([
+    "/auth/login",
+    "/auth/forgot-password",
+    "/auth/reset-password",
+  ]);
+  if (res.status === 401 && !publicAuthPaths.has(requestPath)) {
     clearToken();
     throw new AuthError(data.error || "Authentication required");
   }
@@ -55,6 +61,24 @@ export function login(email, password) {
   return request("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
+  });
+}
+
+export function requestPasswordReset(email) {
+  return request("/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function fetchResetPassword(token) {
+  return request(`/auth/reset-password?token=${encodeURIComponent(token)}`);
+}
+
+export function resetPassword(token, password) {
+  return request("/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
   });
 }
 
