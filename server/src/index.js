@@ -442,8 +442,15 @@ app.get("/api/auth/reset-password", async (req, res) => {
 
 app.post("/api/auth/reset-password", async (req, res) => {
   const token = String(req.body?.token ?? "");
-  const password = req.body?.password;
-  const confirm = req.body?.confirm;
+  const passwordRaw = req.body?.password;
+  const confirmRaw = req.body?.confirm;
+  const password = Array.isArray(passwordRaw) ? String(passwordRaw[0] ?? "") : String(passwordRaw ?? "");
+  const confirm =
+    confirmRaw === undefined
+      ? undefined
+      : Array.isArray(confirmRaw)
+        ? String(confirmRaw[0] ?? "")
+        : String(confirmRaw);
   if (!token || !password) {
     return sendResetResult(req, res, {
       status: 400,
@@ -451,14 +458,14 @@ app.post("/api/auth/reset-password", async (req, res) => {
       token,
     });
   }
-  if (confirm !== undefined && String(confirm) !== String(password)) {
+  if (confirm !== undefined && confirm !== password) {
     return sendResetResult(req, res, {
       status: 400,
       error: "Passwords do not match",
       token,
     });
   }
-  if (String(password).length < 6) {
+  if (password.length < 6) {
     return sendResetResult(req, res, {
       status: 400,
       error: "password must be at least 6 characters",

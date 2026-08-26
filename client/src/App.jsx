@@ -2692,10 +2692,10 @@ function LoginView({ saving, error, notice, prefillEmail, onLogin }) {
 
   function handleSubmit(e) {
     e.preventDefault();
-    const data = new FormData(e.currentTarget);
+    const form = e.currentTarget;
     onLogin({
-      email: String(data.get("username") || "").trim(),
-      password: String(data.get("password") || ""),
+      email: String(form.username?.value || "").trim(),
+      password: String(form.password?.value || ""),
     });
   }
 
@@ -2779,7 +2779,6 @@ function LoginView({ saving, error, notice, prefillEmail, onLogin }) {
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck="false"
-              disabled={saving}
               defaultValue={prefillEmail || ""}
             />
           </label>
@@ -2791,7 +2790,6 @@ function LoginView({ saving, error, notice, prefillEmail, onLogin }) {
               name="password"
               type="password"
               autoComplete="current-password"
-              disabled={saving}
             />
           </label>
           <div className="form-actions login-actions">
@@ -2863,19 +2861,19 @@ function ResetPasswordView({ token, onBackToLogin }) {
   const [error, setError] = useState(
     () => new URLSearchParams(window.location.search).get("resetError") || ""
   );
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
   const [email, setEmail] = useState("");
-  const [reveal, setReveal] = useState(false);
+  const [generated, setGenerated] = useState("");
   const [copied, setCopied] = useState(false);
+  const passwordRef = useRef(null);
+  const confirmRef = useRef(null);
 
   useEffect(() => {
     if (!token) return undefined;
     if (window.location.pathname === "/reset-password") return undefined;
     const params = new URLSearchParams();
     params.set("token", token);
-    const error = new URLSearchParams(window.location.search).get("resetError");
-    if (error) params.set("resetError", error);
+    const resetError = new URLSearchParams(window.location.search).get("resetError");
+    if (resetError) params.set("resetError", resetError);
     window.location.replace(`/reset-password?${params.toString()}`);
     return undefined;
   }, [token]);
@@ -2912,30 +2910,36 @@ function ResetPasswordView({ token, onBackToLogin }) {
 
   function fillGeneratedPassword() {
     const next = generatePassword();
-    setPassword(next);
-    setConfirm(next);
-    setReveal(true);
+    if (passwordRef.current) passwordRef.current.value = next;
+    if (confirmRef.current) confirmRef.current.value = next;
+    passwordRef.current?.dispatchEvent(new Event("input", { bubbles: true }));
+    confirmRef.current?.dispatchEvent(new Event("input", { bubbles: true }));
+    setGenerated(next);
     setCopied(false);
     setError("");
   }
 
   async function copyGeneratedPassword() {
-    if (!password) return;
+    const value = passwordRef.current?.value || generated;
+    if (!value) return;
     try {
-      await navigator.clipboard.writeText(password);
+      await navigator.clipboard.writeText(value);
       setCopied(true);
     } catch {
+      setGenerated(value);
       setCopied(false);
     }
   }
 
   function handleSubmit(e) {
+    const password = String(e.currentTarget.password?.value || "");
+    const confirm = String(e.currentTarget.confirm?.value || "");
     if (password !== confirm) {
       e.preventDefault();
       setError("Passwords do not match");
       return;
     }
-    if (String(password).length < 6) {
+    if (password.length < 6) {
       e.preventDefault();
       setError("password must be at least 6 characters");
     }
@@ -2977,10 +2981,10 @@ function ResetPasswordView({ token, onBackToLogin }) {
           onSubmit={handleSubmit}
         >
           <input type="hidden" name="token" value={token} />
-          <label htmlFor="username">
+          <label htmlFor="login-username">
             Email
             <input
-              id="username"
+              id="login-username"
               name="username"
               type="email"
               autoComplete="username"
@@ -2990,9 +2994,11 @@ function ResetPasswordView({ token, onBackToLogin }) {
               required
               defaultValue={email}
               key={email || "email"}
+              readOnly
+              onFocus={(e) => e.currentTarget.removeAttribute("readOnly")}
             />
           </label>
-          <label htmlFor="reset-password">
+          <label htmlFor="new-password">
             <span className="reset-password-label">
               New password
               <span className="reset-password-tools">
@@ -3003,50 +3009,46 @@ function ResetPasswordView({ token, onBackToLogin }) {
                 >
                   Generate password
                 </button>
-                {reveal && password && (
-                  <button
-                    type="button"
-                    className="login-forgot"
-                    onClick={copyGeneratedPassword}
-                  >
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="login-forgot"
+                  onClick={copyGeneratedPassword}
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
               </span>
             </span>
             <input
               required
-              id="reset-password"
+              id="new-password"
               name="password"
               type="password"
               autoComplete="new-password"
               minLength={6}
-              value={password}
               spellCheck="false"
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setCopied(false);
-              }}
+              ref={passwordRef}
             />
           </label>
-          {reveal && password && (
+          {generated ? (
             <p className="reset-password-hint">
-              Copy this password, then save it when Google asks.{" "}
-              <code className="reset-password-value">{password}</code>
+              Copy this password, then choose Update when Google asks to save it.{" "}
+              <code className="reset-password-value">{generated}</code>
             </p>
-          )}
-          <label htmlFor="reset-confirm">
-            Confirm password
+          ) : null}
+          <label htmlFor="confirm-password">
+            Retype password
             <input
               required
-              id="reset-confirm"
+              id="confirm-password"
               name="confirm"
-              type="password"
-              autoComplete="new-password"
+              type="text"
+              className="reset-password-confirm"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
               minLength={6}
-              value={confirm}
               spellCheck="false"
-              onChange={(e) => setConfirm(e.target.value)}
+              ref={confirmRef}
             />
           </label>
           <div className="form-actions login-actions">

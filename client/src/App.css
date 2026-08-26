@@ -1567,6 +1567,10 @@
   word-break: break-all;
 }
 
+.reset-password-confirm {
+  -webkit-text-security: disc;
+}
+
 .form {
   display: grid;
   gap: 0.9rem;

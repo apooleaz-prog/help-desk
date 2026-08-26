@@ -109,6 +109,12 @@ function pageShell({ title, heading, muted, body }) {
         text-underline-offset: 0.18em;
       }
       .reset-password-label { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; }
+      .reset-password-tools {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.85rem;
+        font-weight: 600;
+      }
       .reset-password-hint { margin: -0.35rem 0 0; font-weight: 400; font-size: 0.85rem; color: var(--muted); }
       .reset-password-value {
         display: none;
@@ -120,6 +126,9 @@ function pageShell({ title, heading, muted, body }) {
         word-break: break-all;
       }
       .reset-password-value.is-on { display: inline-block; }
+      .reset-password-confirm {
+        -webkit-text-security: disc;
+      }
     </style>
   </head>
   <body>
@@ -162,10 +171,10 @@ function resetPasswordPage({ token, email, error }) {
     ? `${errorBanner}
         <form method="post" action="/api/auth/reset-password" autocomplete="on">
           <input type="hidden" name="token" value="${safeToken}" />
-          <label for="username">
+          <label for="login-username">
             Email
             <input
-              id="username"
+              id="login-username"
               name="username"
               type="email"
               autocomplete="username"
@@ -173,13 +182,18 @@ function resetPasswordPage({ token, email, error }) {
               autocorrect="off"
               spellcheck="false"
               required
+              readonly
+              onfocus="this.removeAttribute('readonly')"
               value="${safeEmail}"
             />
           </label>
           <label for="new-password">
             <span class="reset-password-label">
               New password
-              <button type="button" class="login-forgot" id="generate-password">Generate password</button>
+              <span class="reset-password-tools">
+                <button type="button" class="login-forgot" id="generate-password">Generate password</button>
+                <button type="button" class="login-forgot" id="copy-password">Copy</button>
+              </span>
             </span>
             <input
               id="new-password"
@@ -192,19 +206,22 @@ function resetPasswordPage({ token, email, error }) {
             />
           </label>
           <p class="reset-password-hint">
-            Save it when Google asks, so your phone and computer stay in sync.
+            Copy this password, then choose Update when Google asks to save it.
             <code class="reset-password-value" id="generated-password"></code>
           </p>
           <label for="confirm-password">
-            Confirm password
+            Retype password
             <input
               id="confirm-password"
               name="confirm"
-              type="password"
-              autocomplete="new-password"
+              type="text"
+              class="reset-password-confirm"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
               minlength="6"
               required
-              spellcheck="false"
             />
           </label>
           <div class="login-actions">
@@ -218,7 +235,17 @@ function resetPasswordPage({ token, email, error }) {
             var password = document.getElementById("new-password");
             var confirm = document.getElementById("confirm-password");
             var generated = document.getElementById("generated-password");
+            var copyBtn = document.getElementById("copy-password");
             function pick(set) { return set[Math.floor(Math.random() * set.length)]; }
+            function setPassword(value) {
+              password.value = value;
+              confirm.value = value;
+              password.dispatchEvent(new Event("input", { bubbles: true }));
+              confirm.dispatchEvent(new Event("input", { bubbles: true }));
+              generated.textContent = value;
+              generated.classList.add("is-on");
+              copyBtn.textContent = "Copy";
+            }
             document.getElementById("generate-password").addEventListener("click", function () {
               var lower = "abcdefghijkmnopqrstuvwxyz";
               var upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -233,13 +260,22 @@ function resetPasswordPage({ token, email, error }) {
                 chars[i] = chars[j];
                 chars[j] = next;
               }
-              var value = chars.join("");
-              password.value = value;
-              confirm.value = value;
-              password.dispatchEvent(new Event("input", { bubbles: true }));
-              confirm.dispatchEvent(new Event("input", { bubbles: true }));
-              generated.textContent = value;
+              setPassword(chars.join(""));
+            });
+            copyBtn.addEventListener("click", function () {
+              var value = password.value;
+              if (!value) return;
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(value).then(function () {
+                  copyBtn.textContent = "Copied";
+                }).catch(function () {
+                  generated.classList.add("is-on");
+                  generated.textContent = value;
+                });
+                return;
+              }
               generated.classList.add("is-on");
+              generated.textContent = value;
             });
             form.addEventListener("submit", function (event) {
               if (password.value !== confirm.value) {
@@ -270,23 +306,9 @@ function passwordUpdatedPage({ email }) {
   const signInHref = email
     ? `/?email=${encodeURIComponent(email)}`
     : "/";
-  const emailField = email
-    ? `<label for="username">
-            Email
-            <input
-              id="username"
-              name="username"
-              type="email"
-              autocomplete="username"
-              value="${escapeHtml(email)}"
-              readonly
-            />
-          </label>`
-    : "";
   const body = `
         <div class="banner success">Password updated. Sign in with your new password.</div>
         <div class="form">
-          ${emailField}
           <div class="login-actions">
             <a class="btn primary" href="${escapeHtml(signInHref)}" style="text-decoration:none">Sign in</a>
           </div>
