@@ -22,6 +22,11 @@ import {
   deleteTicket,
   fetchAgents,
   fetchAssetTypes,
+  fetchActivityLogs,
+  fetchActivityLogUsers,
+  clearActivityLogs,
+  fetchCalendarSlots,
+  updateCalendarSlot,
   fetchCompanies,
   fetchCompanyAssets,
   fetchCompanyLocations,
@@ -85,6 +90,120 @@ const PERSON_UPDATE_KINDS = [
   { value: "close", label: "Close ticket" },
 ];
 const DURATION_MINUTES = [15, 30, 45, 60, 75, 90, 105, 120, 135, 150];
+const AGENT_COLORS = [
+  { hex: "#e11d48", label: "Red" },
+  { hex: "#ea580c", label: "Orange" },
+  { hex: "#d97706", label: "Amber" },
+  { hex: "#16a34a", label: "Green" },
+  { hex: "#0d9488", label: "Teal" },
+  { hex: "#2563eb", label: "Blue" },
+  { hex: "#4f46e5", label: "Indigo" },
+  { hex: "#9333ea", label: "Purple" },
+  { hex: "#db2777", label: "Pink" },
+  { hex: "#64748b", label: "Slate" },
+];
+const DEFAULT_AGENT_COLOR = "#0d9488";
+const AGENT_COLOR_HEXES = new Set(AGENT_COLORS.map((c) => c.hex));
+
+function agentColorValue(color) {
+  const hex = String(color || "").trim().toLowerCase();
+  return AGENT_COLOR_HEXES.has(hex) ? hex : DEFAULT_AGENT_COLOR;
+}
+
+function agentColorMeta(color) {
+  const hex = agentColorValue(color);
+  return AGENT_COLORS.find((c) => c.hex === hex) ?? AGENT_COLORS[4];
+}
+
+function nextUnusedAgentColor(agents) {
+  const counts = new Map(AGENT_COLORS.map((c) => [c.hex, 0]));
+  for (const agent of agents ?? []) {
+    const hex = agentColorValue(agent.color);
+    counts.set(hex, (counts.get(hex) || 0) + 1);
+  }
+  return AGENT_COLORS.reduce((best, color) =>
+    (counts.get(color.hex) || 0) < (counts.get(best.hex) || 0) ? color : best
+  ).hex;
+}
+
+function agentInitials(name) {
+  return (
+    String(name || "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "?"
+  );
+}
+
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_LABELS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function atNoon(year, month, day) {
+  return new Date(year, month, day, 12);
+}
+
+function cloneDay(date) {
+  return atNoon(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date, count) {
+  return atNoon(date.getFullYear(), date.getMonth(), date.getDate() + count);
+}
+
+function addMonths(date, count) {
+  return atNoon(date.getFullYear(), date.getMonth() + count, 1);
+}
+
+function startOfWeek(date) {
+  return addDays(date, -date.getDay());
+}
+
+function toDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatDayNumber(date) {
+  return String(date.getDate());
+}
+
+function formatWeekRange(start) {
+  const end = addDays(start, 6);
+  const startMonth = MONTH_LABELS[start.getMonth()].slice(0, 3);
+  const endMonth = MONTH_LABELS[end.getMonth()].slice(0, 3);
+  if (start.getFullYear() !== end.getFullYear()) {
+    return `${startMonth} ${start.getDate()}, ${start.getFullYear()} – ${endMonth} ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  if (start.getMonth() !== end.getMonth()) {
+    return `${startMonth} ${start.getDate()} – ${endMonth} ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  return `${startMonth} ${start.getDate()} – ${end.getDate()}, ${end.getFullYear()}`;
+}
+
+function formatMonthTitle(date) {
+  return `${MONTH_LABELS[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+function slotKey(dateKey, session) {
+  return `${dateKey}|${session}`;
+}
 
 function updateKindPhrase(kind) {
   if (kind === "call") return "had a call";
@@ -611,6 +730,14 @@ function App() {
   const [manufacturers, setManufacturers] = useState([]);
   const [assetTypes, setAssetTypes] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [activityLogUserId, setActivityLogUserId] = useState("");
+  const [activityLogReturn, setActivityLogReturn] = useState(null);
+  const [restoreAgentId, setRestoreAgentId] = useState(null);
+  const [restoreCustomers, setRestoreCustomers] = useState(null);
+  const selectedAgentIdRef = useRef(null);
+  const selectedCompanyIdRef = useRef(null);
+  const selectedPersonIdRef = useRef(null);
+  const selectedCompanySectionRef = useRef(null);
   const [selected, setSelected] = useState(null);
   const [statusFilter, setStatusFilter] = useState(DEFAULT_TICKET_STATUSES);
   const [companyFilter, setCompanyFilter] = useState("");
@@ -661,6 +788,25 @@ function App() {
     ? ticketsForCustomer(tickets, person, allFilter ? undefined : mineFilter)
     : tickets;
 
+  function snapshotLogReturn() {
+    return {
+      view,
+      agentId: view === "agents" ? selectedAgentIdRef.current : null,
+      companyId: view === "companies" ? selectedCompanyIdRef.current : null,
+      personId: view === "companies" ? selectedPersonIdRef.current : null,
+      section: view === "companies" ? selectedCompanySectionRef.current : null,
+    };
+  }
+
+  function openActivityLog({ userId = "", revealAdvanced = false } = {}) {
+    if (view !== "activityLog") {
+      setActivityLogReturn(snapshotLogReturn());
+    }
+    if (revealAdvanced) setShowAdvanced(true);
+    setActivityLogUserId(userId);
+    setView("activityLog");
+  }
+
   function clearSessionState() {
     setRole(null);
     setAgent(null);
@@ -668,6 +814,7 @@ function App() {
     setView("list");
     setSelected(null);
     setShowAdvanced(false);
+    setActivityLogUserId("");
     setTickets([]);
     setOpenByPriority(emptyPriorityCounts());
     setTicketsByPriority(emptyPriorityCounts());
@@ -839,7 +986,7 @@ function App() {
   }, [view]);
 
   useEffect(() => {
-    if (isAgent && view === "agents") {
+    if (isAgent && (view === "agents" || view === "activityLog" || view === "calendar")) {
       loadAgents().catch((err) => {
         if (!handleAuthFailure(err)) setError(err.message);
       });
@@ -1479,6 +1626,30 @@ function App() {
           {isAgent && (
             <button
               type="button"
+              className={`btn icon ghost icon-calendar${view === "calendar" ? " is-active" : ""}`}
+              onClick={() => {
+                setShowAdvanced(false);
+                setView("calendar");
+                setSelected(null);
+              }}
+              aria-label="Calendar"
+              aria-pressed={view === "calendar"}
+              data-tooltip="Calendar"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="#4f46e5"
+                  d="M7 3.4h1.6V5h6.8V3.4H17V5h1.6A1.9 1.9 0 0 1 20.5 6.9v12.2a1.9 1.9 0 0 1-1.9 1.9H5.4A1.9 1.9 0 0 1 3.5 19.1V6.9A1.9 1.9 0 0 1 5.4 5H7V3.4Z"
+                />
+                <path fill="#eef2ff" d="M5.2 9.1h13.6v10.2H5.2V9.1Z" />
+                <path fill="#f59e0b" d="M6.4 10.4h5.3v4.15H6.4V10.4Z" />
+                <path fill="#2563eb" d="M12.3 10.4h5.3v4.15h-5.3V10.4Z" />
+              </svg>
+            </button>
+          )}
+          {isAgent && (
+            <button
+              type="button"
               className={`btn icon ghost icon-advanced${showAdvanced ? " is-open" : ""}`}
               onClick={() => setShowAdvanced(true)}
               aria-label="Advanced"
@@ -1519,7 +1690,10 @@ function App() {
             <button
               type="button"
               className={`btn icon ghost icon-agents${view === "agents" ? " is-active" : ""}`}
-              onClick={() => setView("agents")}
+              onClick={() => {
+                setRestoreAgentId(null);
+                setView("agents");
+              }}
               aria-label="Agents"
               aria-pressed={view === "agents"}
               data-tooltip="Agents"
@@ -1539,7 +1713,10 @@ function App() {
             <button
               type="button"
               className={`btn icon ghost icon-customers${view === "companies" ? " is-active" : ""}`}
-              onClick={() => setView("companies")}
+              onClick={() => {
+                setRestoreCustomers(null);
+                setView("companies");
+              }}
               aria-label="Customers"
               aria-pressed={view === "companies"}
               data-tooltip="Customers"
@@ -1598,6 +1775,16 @@ function App() {
                   d="M3.6 14.85 12 19.5l8.4-4.65v1.85L12 21.4 3.6 16.7Z"
                 />
               </svg>
+            </button>
+            <button
+              type="button"
+              className={`btn icon ghost icon-log${view === "activityLog" ? " is-active" : ""}`}
+              onClick={() => openActivityLog()}
+              aria-label="Activity log"
+              aria-pressed={view === "activityLog"}
+              data-tooltip="Activity log"
+            >
+              <LogIcon />
             </button>
           </nav>
         )}
@@ -1691,12 +1878,30 @@ function App() {
           />
         )}
 
+        {isAgent && view === "calendar" && (
+          <CalendarView
+            agents={agents}
+            onAuthFailure={handleAuthFailure}
+            onError={setError}
+          />
+        )}
+
         {isAgent && view === "companies" && (
           <CompaniesView
             companies={companies}
             manufacturers={manufacturers}
             assetTypes={assetTypes}
             saving={saving}
+            initialCompanyId={restoreCustomers?.companyId || null}
+            initialPersonId={restoreCustomers?.personId || null}
+            initialSection={restoreCustomers?.section || "people"}
+            selectedCompanyIdRef={selectedCompanyIdRef}
+            selectedPersonIdRef={selectedPersonIdRef}
+            selectedCompanySectionRef={selectedCompanySectionRef}
+            onConsumedRestore={() => setRestoreCustomers(null)}
+            onOpenLog={(personId) => {
+              openActivityLog({ userId: personId, revealAdvanced: true });
+            }}
             onCreateCompany={handleCreateCompany}
             onUpdateCompany={handleUpdateCompany}
             onDeleteCompany={handleDeleteCompany}
@@ -1717,9 +1922,15 @@ function App() {
             agents={agents}
             currentAgentId={agent.id}
             saving={saving}
+            initialSelectedAgentId={restoreAgentId}
+            selectedAgentIdRef={selectedAgentIdRef}
+            onConsumedRestore={() => setRestoreAgentId(null)}
             onCreate={handleCreateAgent}
             onUpdate={handleUpdateAgent}
             onDelete={handleDeleteAgent}
+            onOpenLog={(agentId) => {
+              openActivityLog({ userId: agentId, revealAdvanced: true });
+            }}
           />
         )}
 
@@ -1757,6 +1968,34 @@ function App() {
             detailsPlaceholder="Notes about this type of asset…"
             withImage
             imageVariant="asset"
+          />
+        )}
+
+        {isAgent && view === "activityLog" && (
+          <ActivityLogView
+            key={activityLogUserId || "all"}
+            onAuthFailure={handleAuthFailure}
+            initialUserId={activityLogUserId}
+            onBack={
+              activityLogReturn
+                ? () => {
+                    const next = activityLogReturn;
+                    setActivityLogReturn(null);
+                    setActivityLogUserId("");
+                    setRestoreAgentId(next.agentId || null);
+                    setRestoreCustomers(
+                      next.view === "companies" && next.companyId
+                        ? {
+                            companyId: next.companyId,
+                            personId: next.personId || null,
+                            section: next.section || "people",
+                          }
+                        : null
+                    );
+                    setView(next.view);
+                  }
+                : null
+            }
           />
         )}
 
@@ -1809,6 +2048,44 @@ function AddPlusButton({
       <span className="add-plus-sign" aria-hidden="true">
         +
       </span>
+    </button>
+  );
+}
+
+function LogIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        fill="#0f766e"
+        d="M4.5 3.5h15A2.5 2.5 0 0 1 22 6v12a2.5 2.5 0 0 1-2.5 2.5h-15A2.5 2.5 0 0 1 2 18V6a2.5 2.5 0 0 1 2.5-2.5Z"
+      />
+      <circle cx="7.6" cy="8.1" r="1.45" fill="#f59e0b" />
+      <circle cx="7.6" cy="12" r="1.45" fill="#f59e0b" />
+      <circle cx="7.6" cy="15.9" r="1.45" fill="#f59e0b" />
+      <path
+        fill="#ffffff"
+        d="M10.4 7.1h8.1v2H10.4v-2Zm0 3.9h8.1v2H10.4v-2Zm0 3.9h6v2h-6v-2Z"
+      />
+    </svg>
+  );
+}
+
+function LogIconButton({
+  label = "Activity log",
+  onClick,
+  disabled = false,
+  className = "",
+}) {
+  return (
+    <button
+      type="button"
+      className={`btn icon-log-action ${className}`.trim()}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      data-tooltip={label}
+    >
+      <LogIcon />
     </button>
   );
 }
@@ -2157,6 +2434,93 @@ function AssetPreviewDialog({ asset, onClose }) {
       </div>
     </div>,
     document.body
+  );
+}
+
+function AgentColorPicker({ value, onChange, disabled }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
+  const popupRef = useRef(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const current = agentColorMeta(value);
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 6, left: rect.left });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(event) {
+      if (
+        triggerRef.current?.contains(event.target) ||
+        popupRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      setOpen(false);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="agent-color-trigger"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span
+          className="agent-color-swatch"
+          style={{ background: current.hex }}
+        />
+        {current.label}
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popupRef}
+              className="agent-color-popup"
+              role="listbox"
+              aria-label="Agent color"
+              style={{ top: pos.top, left: pos.left }}
+            >
+              {AGENT_COLORS.map((color) => (
+                <button
+                  key={color.hex}
+                  type="button"
+                  role="option"
+                  aria-selected={color.hex === current.hex}
+                  aria-label={color.label}
+                  title={color.label}
+                  className={`agent-color-option${
+                    color.hex === current.hex ? " selected" : ""
+                  }`}
+                  style={{ background: color.hex }}
+                  onClick={() => {
+                    onChange(color.hex);
+                    setOpen(false);
+                  }}
+                />
+              ))}
+            </div>,
+            document.body
+          )
+        : null}
+    </>
   );
 }
 
@@ -3079,19 +3443,42 @@ function AgentsView({
   agents,
   currentAgentId,
   saving,
+  initialSelectedAgentId = null,
+  selectedAgentIdRef,
+  onConsumedRestore,
   onCreate,
   onUpdate,
   onDelete,
+  onOpenLog,
 }) {
-  const blank = { name: "", email: "", phone: "", password: "" };
+  const blank = {
+    name: "",
+    email: "",
+    phone: "",
+    password: "",
+    color: DEFAULT_AGENT_COLOR,
+  };
   const [draft, setDraft] = useState(blank);
   const [showCreate, setShowCreate] = useState(false);
-  const [selectedAgentId, setSelectedAgentId] = useState(null);
+  const [selectedAgentId, setSelectedAgentId] = useState(
+    initialSelectedAgentId || null
+  );
   const [editingAgent, setEditingAgent] = useState(false);
   const [editForm, setEditForm] = useState(blank);
   const [pendingDelete, setPendingDelete] = useState(null);
   const selectedAgent =
     agents.find((agent) => agent.id === selectedAgentId) ?? null;
+
+  if (selectedAgentIdRef) selectedAgentIdRef.current = selectedAgentId;
+
+  useEffect(() => {
+    if (initialSelectedAgentId) onConsumedRestore?.();
+    return () => {
+      if (selectedAgentIdRef) selectedAgentIdRef.current = null;
+    };
+    // Restore the agent we came back from once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function openAgent(agent, { edit = false } = {}) {
     setSelectedAgentId(agent.id);
@@ -3103,6 +3490,7 @@ function AgentsView({
         email: agent.email,
         phone: agent.phone || "",
         password: "",
+        color: agentColorValue(agent.color),
       });
     } else {
       setEditingAgent(false);
@@ -3132,6 +3520,7 @@ function AgentsView({
       name: editForm.name,
       email: editForm.email,
       phone: editForm.phone,
+      color: agentColorValue(editForm.color),
     };
     if (editForm.password.trim()) {
       payload.password = editForm.password;
@@ -3210,7 +3599,7 @@ function AgentsView({
             className="btn ghost compact customer-back"
             onClick={closeAgent}
           >
-            ← Support agents
+            Support agents
           </button>
         </div>
         <div className="company-detail">
@@ -3251,6 +3640,16 @@ function AgentsView({
                   />
                 </label>
               </div>
+              <div className="form-field">
+                <span>Color</span>
+                <AgentColorPicker
+                  value={editForm.color}
+                  onChange={(color) =>
+                    setEditForm((form) => ({ ...form, color }))
+                  }
+                  disabled={saving}
+                />
+              </div>
               <label>
                 New password <span className="optional">(optional)</span>
                 <input
@@ -3279,6 +3678,14 @@ function AgentsView({
                 <PersonAvatar name={selectedAgent.name} size="lg" />
                 <div>
                   <div className="agent-detail-title">
+                    <span
+                      className="agent-color-pip"
+                      style={{
+                        background: agentColorValue(selectedAgent.color),
+                      }}
+                      title={agentColorMeta(selectedAgent.color).label}
+                      aria-hidden="true"
+                    />
                     <h1>{selectedAgent.name}</h1>
                     {selectedAgent.id === currentAgentId ? (
                       <span className="pill you">you</span>
@@ -3299,6 +3706,11 @@ function AgentsView({
                 </div>
               </div>
               <div className="company-card-actions">
+                <LogIconButton
+                  label="Activity log"
+                  disabled={saving}
+                  onClick={() => onOpenLog(selectedAgent.id)}
+                />
                 <EditIconButton
                   label="Edit agent"
                   disabled={saving}
@@ -3325,7 +3737,13 @@ function AgentsView({
           <h1>Support agents</h1>
         </div>
         {!showCreate && (
-          <AddPlusButton label="Add agent" onClick={() => setShowCreate(true)} />
+          <AddPlusButton
+            label="Add agent"
+            onClick={() => {
+              setDraft({ ...blank, color: nextUnusedAgentColor(agents) });
+              setShowCreate(true);
+            }}
+          />
         )}
       </div>
 
@@ -3362,6 +3780,14 @@ function AgentsView({
               />
             </label>
           </div>
+          <div className="form-field">
+            <span>Color</span>
+            <AgentColorPicker
+              value={draft.color}
+              onChange={(color) => setDraft((d) => ({ ...d, color }))}
+              disabled={saving}
+            />
+          </div>
           <label>
             Password
             <input
@@ -3395,7 +3821,8 @@ function AgentsView({
           <li key={agent.id}>
             <button
               type="button"
-              className="company-list-row"
+              className="company-list-row agent-list-row"
+              style={{ "--agent-color": agentColorValue(agent.color) }}
               onClick={() => openAgent(agent)}
             >
               <PersonAvatar name={agent.name} size="md" />
@@ -3546,7 +3973,7 @@ function CatalogView({
             className="btn ghost compact customer-back"
             onClick={closeItem}
           >
-            ← {title}
+            {title}
           </button>
         </div>
         <div className="company-detail">
@@ -3890,6 +4317,455 @@ function PriorityPieChart({ counts, selectedPriority, onSelectPriority }) {
   );
 }
 
+function calendarSlotNeeds(el) {
+  const measure = el.querySelector(".calendar-slot-measure");
+  if (!measure) return { available: el.clientWidth, needInitials: 0, needSession: 0 };
+  const styles = getComputedStyle(measure);
+  const pad =
+    Number.parseFloat(styles.paddingLeft) + Number.parseFloat(styles.paddingRight);
+  const innerGap = Number.parseFloat(styles.gap) || 0;
+  const agent = measure.querySelector(".calendar-slot-agent");
+  const agentGap = agent ? Number.parseFloat(getComputedStyle(agent).gap) || 0 : 0;
+  const sessionW = measure.querySelector(".calendar-slot-session")?.offsetWidth ?? 0;
+  const labelW = measure.querySelector(".calendar-slot-label")?.offsetWidth ?? 0;
+  const pipW = measure.querySelector(".agent-color-pip")?.offsetWidth ?? 0;
+  const hasAgentBits = Boolean(pipW && labelW);
+  return {
+    available: el.clientWidth,
+    needInitials: pad + pipW + (hasAgentBits ? agentGap : 0) + labelW,
+    needSession: pad + sessionW + innerGap + pipW + (hasAgentBits ? agentGap : 0) + labelW,
+  };
+}
+
+function CalendarSlotButton({
+  assigned,
+  color,
+  label,
+  compact,
+  saving,
+  sessionLabel,
+  sessionShort,
+  date,
+  showSession = false,
+  onClick,
+}) {
+  const ref = useRef(null);
+  const measureRef = useRef(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const measure = measureRef.current;
+    if (!el || !measure) return;
+
+    function fit() {
+      const { available, needInitials, needSession } = calendarSlotNeeds(el);
+      let next = "color";
+      if (needInitials <= available) next = "initials";
+      if (showSession && needSession <= available) next = "session";
+      if (el.dataset.fit !== next) el.dataset.fit = next;
+    }
+
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [assigned, color, label, compact, saving, sessionShort, showSession]);
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className={`calendar-slot${assigned ? "" : " is-empty"}${
+        compact ? " is-compact" : ""
+      }${saving ? " is-saving" : ""}`}
+      data-fit="color"
+      style={assigned ? { "--slot-color": color } : undefined}
+      aria-label={`${sessionLabel} ${date.toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      })}${assigned ? `, ${assigned.name}` : ", unassigned"}`}
+      onClick={onClick}
+    >
+      <span className="calendar-slot-measure" ref={measureRef} aria-hidden="true">
+        <span className="calendar-slot-session">{sessionShort}</span>
+        <span className="calendar-slot-agent">
+          {assigned ? (
+            <span
+              className="agent-color-pip"
+              style={{ background: color }}
+            />
+          ) : null}
+          <span className="calendar-slot-label">{label}</span>
+        </span>
+      </span>
+      <span className="calendar-slot-inner">
+        <span className="calendar-slot-session">{sessionShort}</span>
+        <span className="calendar-slot-agent" title={assigned?.name || "Unassigned"}>
+          {assigned ? (
+            <span
+              className="agent-color-pip"
+              style={{ background: color }}
+              aria-hidden="true"
+            />
+          ) : null}
+          <span className="calendar-slot-label">{label}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function CalendarView({ agents, onAuthFailure, onError }) {
+  const today = useMemo(() => cloneDay(new Date()), []);
+  const todayKey = toDateKey(today);
+  const mode = "month";
+  const [cursor, setCursor] = useState(today);
+  const [slots, setSlots] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState("");
+  const [editing, setEditing] = useState(null);
+  const triggerRef = useRef(null);
+  const popupRef = useRef(null);
+  const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
+  const bodyRef = useRef(null);
+  const [showSession, setShowSession] = useState(false);
+
+  const range = useMemo(() => {
+    if (mode === "week") {
+      const start = startOfWeek(cursor);
+      return { start, end: addDays(start, 6), days: 7 };
+    }
+    const monthStart = atNoon(cursor.getFullYear(), cursor.getMonth(), 1);
+    const gridStart = startOfWeek(monthStart);
+    const monthEnd = atNoon(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+    const gridEnd = addDays(startOfWeek(monthEnd), 6);
+    const days = Math.round((gridEnd - gridStart) / (24 * 60 * 60 * 1000)) + 1;
+    return { start: gridStart, end: gridEnd, days, month: cursor.getMonth() };
+  }, [cursor, mode]);
+
+  const days = useMemo(() => {
+    return Array.from({ length: range.days }, (_, index) => addDays(range.start, index));
+  }, [range]);
+
+  const rangeFrom = toDateKey(range.start);
+  const rangeTo = toDateKey(range.end);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchCalendarSlots(rangeFrom, rangeTo)
+      .then((rows) => {
+        if (cancelled) return;
+        const next = {};
+        for (const row of rows) {
+          next[slotKey(row.date, row.session)] = row.agentId || "";
+        }
+        setSlots(next);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (!onAuthFailure?.(err)) onError?.(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rangeFrom, rangeTo]);
+
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return undefined;
+    function updateSessionVisibility() {
+      const buttons = body.querySelectorAll(".calendar-slot");
+      if (!buttons.length) {
+        setShowSession(false);
+        return;
+      }
+      let show = true;
+      for (const el of buttons) {
+        const { available, needSession } = calendarSlotNeeds(el);
+        if (needSession > available) {
+          show = false;
+          break;
+        }
+      }
+      setShowSession((current) => (current === show ? current : show));
+    }
+    updateSessionVisibility();
+    const observer = new ResizeObserver(updateSessionVisibility);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [days, agents, slots, loading]);
+
+  useLayoutEffect(() => {
+    if (!editing) return undefined;
+    const margin = 8;
+    function place() {
+      const trigger = triggerRef.current;
+      const popup = popupRef.current;
+      if (!trigger || !popup) return;
+      const rect = trigger.getBoundingClientRect();
+      const width = popup.offsetWidth || 220;
+      const maxHeight = Math.max(160, window.innerHeight - margin * 2);
+      popup.style.maxHeight = `${maxHeight}px`;
+      const height = popup.offsetHeight;
+      let left = rect.left;
+      if (left + width > window.innerWidth - margin) {
+        left = window.innerWidth - width - margin;
+      }
+      if (left < margin) left = margin;
+      const gap = 6;
+      const below = rect.bottom + gap;
+      const spaceBelow = window.innerHeight - below - margin;
+      const spaceAbove = rect.top - margin - gap;
+      let top;
+      if (height <= spaceBelow || spaceBelow >= spaceAbove) {
+        top = below;
+        if (top + height > window.innerHeight - margin) {
+          top = Math.max(margin, window.innerHeight - height - margin);
+        }
+      } else {
+        top = rect.top - gap - height;
+        if (top < margin) top = margin;
+      }
+      setPopupPos((prev) =>
+        prev.top === top && prev.left === left && prev.maxHeight === maxHeight
+          ? prev
+          : { top, left, maxHeight }
+      );
+    }
+    place();
+    const frame = requestAnimationFrame(place);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [editing]);
+
+  useEffect(() => {
+    if (!editing) return;
+    function onDoc(event) {
+      if (
+        triggerRef.current?.contains(event.target) ||
+        popupRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      setEditing(null);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") setEditing(null);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [editing]);
+
+  async function assignSlot(dateKey, session, agentId) {
+    const key = slotKey(dateKey, session);
+    const previous = slots[key] || "";
+    setSlots((current) => ({ ...current, [key]: agentId }));
+    setSavingKey(key);
+    setEditing(null);
+    try {
+      await updateCalendarSlot({ date: dateKey, session, agentId });
+    } catch (err) {
+      setSlots((current) => ({ ...current, [key]: previous }));
+      if (!onAuthFailure?.(err)) onError?.(err.message);
+    } finally {
+      setSavingKey("");
+    }
+  }
+
+  function openEditor(event, dateKey, session) {
+    triggerRef.current = event.currentTarget;
+    setEditing({ date: dateKey, session });
+  }
+
+  function agentFor(dateKey, session) {
+    const id = slots[slotKey(dateKey, session)] || "";
+    if (!id) return null;
+    return agents.find((agent) => agent.id === id) ?? null;
+  }
+
+  function goToday() {
+    setCursor(cloneDay(new Date()));
+  }
+
+  function goPrev() {
+    setCursor((current) =>
+      mode === "week" ? addDays(current, -7) : addMonths(current, -1)
+    );
+  }
+
+  function goNext() {
+    setCursor((current) =>
+      mode === "week" ? addDays(current, 7) : addMonths(current, 1)
+    );
+  }
+
+  const title = mode === "week" ? formatWeekRange(range.start) : formatMonthTitle(cursor);
+  const sortedAgents = [...agents].sort((a, b) => a.name.localeCompare(b.name));
+
+  function renderSlot(date, session, compact) {
+    const dateKey = toDateKey(date);
+    const key = slotKey(dateKey, session);
+    const assigned = agentFor(dateKey, session);
+    const color = assigned ? agentColorValue(assigned.color) : "";
+    const label = assigned
+      ? compact
+        ? agentInitials(assigned.name)
+        : assigned.name
+      : compact
+        ? "—"
+        : "Unassigned";
+    const sessionLabel = session === "morning" ? "Morning" : "Afternoon";
+    return (
+      <CalendarSlotButton
+        assigned={assigned}
+        color={color}
+        label={label}
+        compact={compact}
+        saving={savingKey === key}
+        sessionLabel={sessionLabel}
+        sessionShort={session === "morning" ? "AM" : "PM"}
+        showSession={showSession}
+        date={date}
+        onClick={(event) => openEditor(event, dateKey, session)}
+      />
+    );
+  }
+
+  const editingLabel = editing
+    ? `${editing.session === "morning" ? "Morning" : "Afternoon"} · ${parseFriendly(
+        editing.date
+      )}`
+    : "";
+
+  return (
+    <section className="panel calendar-panel">
+      <div className="panel-head calendar-head">
+        <div className="calendar-head-copy">
+          <h1>Calendar</h1>
+          <p className="muted">{title}</p>
+        </div>
+        <div className="calendar-toolbar">
+          <div className="calendar-nav">
+            <button type="button" className="btn ghost compact" onClick={goPrev}>
+              Prev
+            </button>
+            <button type="button" className="btn ghost compact" onClick={goToday}>
+              Today
+            </button>
+            <button type="button" className="btn ghost compact" onClick={goNext}>
+              Next
+            </button>
+          </div>
+        </div>
+      </div>
+      <div
+        ref={bodyRef}
+        className={`calendar-body is-${mode}${loading ? " is-loading" : ""}`}
+      >
+        {WEEKDAY_LABELS.map((label) => (
+          <div key={label} className="calendar-dow" title={label}>
+            <span className="calendar-dow-full">{label}</span>
+            <span className="calendar-dow-short">{label.slice(0, 1)}</span>
+          </div>
+        ))}
+        {days.map((date) => {
+          const dateKey = toDateKey(date);
+          const outside =
+            mode === "month" && date.getMonth() !== range.month;
+          const isToday = dateKey === todayKey;
+          return (
+            <div
+              key={dateKey}
+              className={`calendar-day${outside ? " is-outside" : ""}${
+                isToday ? " is-today" : ""
+              }`}
+            >
+              <div className="calendar-day-num">{formatDayNumber(date)}</div>
+              {renderSlot(date, "morning", mode === "month")}
+              {renderSlot(date, "afternoon", mode === "month")}
+            </div>
+          );
+        })}
+      </div>
+      {editing
+        ? createPortal(
+            <div
+              ref={popupRef}
+              className="calendar-assign-popup"
+              role="listbox"
+              aria-label={editingLabel}
+              style={{
+                top: popupPos.top,
+                left: popupPos.left,
+                maxHeight: popupPos.maxHeight,
+              }}
+            >
+              <div className="calendar-assign-title">{editingLabel}</div>
+              <button
+                type="button"
+                role="option"
+                className={`calendar-assign-option${
+                  !slots[slotKey(editing.date, editing.session)] ? " selected" : ""
+                }`}
+                aria-selected={!slots[slotKey(editing.date, editing.session)]}
+                onClick={() => assignSlot(editing.date, editing.session, "")}
+              >
+                Unassigned
+              </button>
+              {sortedAgents.map((agent) => {
+                const selected =
+                  slots[slotKey(editing.date, editing.session)] === agent.id;
+                const color = agentColorValue(agent.color);
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    role="option"
+                    className={`calendar-assign-option${selected ? " selected" : ""}`}
+                    aria-selected={selected}
+                    onClick={() => assignSlot(editing.date, editing.session, agent.id)}
+                  >
+                    <span
+                      className="agent-color-pip"
+                      style={{ background: color }}
+                      aria-hidden="true"
+                    />
+                    {agent.name}
+                  </button>
+                );
+              })}
+            </div>,
+            document.body
+          )
+        : null}
+    </section>
+  );
+}
+
+function parseFriendly(dateKey) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = atNoon(year, month - 1, day);
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function StatsView({
   openByPriority,
   ticketsByPriority,
@@ -3939,6 +4815,372 @@ function StatsView({
           onSelectPriority={onSelectPriority}
         />
       </div>
+    </section>
+  );
+}
+
+const LOG_ROW_HEIGHT = 34;
+const LOG_PAGE_SIZE = 200;
+const LOG_ACTIONS = [
+  { value: "", label: "All actions" },
+  { value: "login", label: "Login" },
+  { value: "logout", label: "Logout" },
+  { value: "create", label: "Add" },
+  { value: "delete", label: "Delete" },
+];
+const LOG_RESOURCE_LABELS = {
+  agent: "Agent",
+  person: "Customer",
+  company: "Customer",
+  ticket: "Ticket",
+  manufacturer: "Manufacturer",
+  assetType: "Asset type",
+  asset: "Asset",
+  location: "Location",
+};
+const LOG_ACTION_LABELS = {
+  login: "Login",
+  logout: "Logout",
+  create: "Add",
+  delete: "Delete",
+};
+
+function formatLogTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso || "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function logItemLabel(entry) {
+  if (entry.action === "login") return "Signed in";
+  if (entry.action === "logout") return "Signed out";
+  const type = LOG_RESOURCE_LABELS[entry.resourceType] || entry.resourceType;
+  const name = entry.resourceName || entry.resourceId;
+  if (type && name) return `${type} · ${name}`;
+  return type || name || "—";
+}
+
+function ActivityLogView({
+  onAuthFailure,
+  initialUserId = "",
+  onBack,
+}) {
+  const [users, setUsers] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const [userId, setUserId] = useState(initialUserId);
+  const [action, setAction] = useState("");
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const bodyRef = useRef(null);
+  const [windowStart, setWindowStart] = useState(0);
+  const [windowEnd, setWindowEnd] = useState(80);
+  const requestId = useRef(0);
+  const entriesRef = useRef([]);
+  const hasMoreRef = useRef(false);
+  const loadingRef = useRef(true);
+  const loadingMoreRef = useRef(false);
+  const onAuthFailureRef = useRef(onAuthFailure);
+  entriesRef.current = entries;
+  hasMoreRef.current = hasMore;
+  loadingRef.current = loading;
+  loadingMoreRef.current = loadingMore;
+  onAuthFailureRef.current = onAuthFailure;
+
+  const agents = users.filter((user) => user.role === "agent");
+  const customers = users.filter((user) => user.role === "person");
+
+  const loadMore = useCallback(async () => {
+    if (loadingRef.current || loadingMoreRef.current || !hasMoreRef.current) return;
+    const last = entriesRef.current[entriesRef.current.length - 1];
+    if (!last) return;
+    const id = requestId.current;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const data = await fetchActivityLogs({
+        userId,
+        action,
+        limit: LOG_PAGE_SIZE,
+        before: `${last.createdAt}|${last.id}`,
+      });
+      if (id !== requestId.current) return;
+      const next = Array.isArray(data?.entries) ? data.entries : [];
+      setEntries((current) => current.concat(next));
+      setHasMore(Boolean(data?.hasMore));
+    } catch (err) {
+      if (id !== requestId.current) return;
+      if (onAuthFailureRef.current?.(err)) return;
+      setError(err.message);
+    } finally {
+      if (id === requestId.current) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
+    }
+  }, [action, userId]);
+
+  useEffect(() => {
+    fetchActivityLogUsers()
+      .then((data) => setUsers(Array.isArray(data) ? data : []))
+      .catch((err) => {
+        if (!onAuthFailureRef.current?.(err)) setError(err.message);
+      });
+  }, []);
+
+  useEffect(() => {
+    const id = ++requestId.current;
+    setLoading(true);
+    setError("");
+    setEntries([]);
+    setHasMore(false);
+    setWindowStart(0);
+    setWindowEnd(80);
+    fetchActivityLogs({ userId, action, limit: LOG_PAGE_SIZE })
+      .then((data) => {
+        if (id !== requestId.current) return;
+        setEntries(Array.isArray(data?.entries) ? data.entries : []);
+        setHasMore(Boolean(data?.hasMore));
+      })
+      .catch((err) => {
+        if (id !== requestId.current) return;
+        if (onAuthFailureRef.current?.(err)) return;
+        setError(err.message);
+      })
+      .finally(() => {
+        if (id === requestId.current) setLoading(false);
+      });
+  }, [action, userId]);
+
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return undefined;
+    function update() {
+      const count = entriesRef.current.length;
+      const overscan = 20;
+      const start = Math.max(0, Math.floor(el.scrollTop / LOG_ROW_HEIGHT) - overscan);
+      const visibleCount = Math.ceil(el.clientHeight / LOG_ROW_HEIGHT) + overscan * 2;
+      const end = Math.min(count, start + Math.max(visibleCount, 40));
+      setWindowStart((current) => (current === start ? current : start));
+      setWindowEnd((current) => (current === end ? current : end));
+      if (el.scrollTop + el.clientHeight > el.scrollHeight - LOG_ROW_HEIGHT * 24) {
+        loadMore();
+      }
+    }
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  }, [entries.length, loadMore]);
+
+  const visible = entries.slice(windowStart, windowEnd);
+  const topPad = windowStart * LOG_ROW_HEIGHT;
+  const bottomPad = Math.max(0, (entries.length - windowEnd) * LOG_ROW_HEIGHT);
+  const canClear = !loading && (entries.length > 0 || hasMore);
+
+  async function confirmClearLog() {
+    setClearing(true);
+    setError("");
+    try {
+      await clearActivityLogs();
+      requestId.current += 1;
+      setEntries([]);
+      setHasMore(false);
+      setWindowStart(0);
+      setWindowEnd(80);
+      setConfirmClear(false);
+    } catch (err) {
+      if (onAuthFailureRef.current?.(err)) return;
+      setError(err.message);
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  const colCount = 4;
+
+  return (
+    <section className="panel log-panel">
+      <div className="panel-head">
+        <div className="log-head-copy">
+          {onBack ? (
+            <button
+              type="button"
+              className="btn ghost compact customer-back"
+              onClick={onBack}
+            >
+              Back
+            </button>
+          ) : null}
+          <span className="log-head-icon">
+            <LogIcon />
+          </span>
+          <h1>Activity log</h1>
+          <p className="muted">
+            {loading && !entries.length
+              ? "Loading…"
+              : `${entries.length}${hasMore ? "+" : ""} ${
+                  entries.length === 1 ? "entry" : "entries"
+                }`}
+          </p>
+        </div>
+        <div className="filters activity-log-filters">
+          <label className="company-filter">
+            User
+            <select
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              aria-label="Filter by user"
+            >
+              <option value="">All users</option>
+              {agents.length > 0 && (
+                <optgroup label="Agents">
+                  {agents.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                      {user.email ? ` (${user.email})` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {customers.length > 0 && (
+                <optgroup label="Customers">
+                  {customers.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                      {user.companyName ? ` · ${user.companyName}` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </label>
+          <label className="company-filter">
+            Action
+            <select
+              value={action}
+              onChange={(e) => setAction(e.target.value)}
+              aria-label="Filter by action"
+            >
+              {LOG_ACTIONS.map((item) => (
+                <option key={item.value || "all"} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <CancelIconButton
+          label="Clear log"
+          className="tooltip-below"
+          disabled={!canClear || clearing}
+          onClick={() => setConfirmClear(true)}
+        />
+      </div>
+      {error ? <div className="banner error">{error}</div> : null}
+      <div className="activity-log-body" ref={bodyRef}>
+        {loading && !entries.length ? (
+          <p className="muted activity-log-empty">Loading log…</p>
+        ) : entries.length === 0 ? (
+          <p className="muted activity-log-empty">No matching log entries.</p>
+        ) : (
+          <table className="activity-log-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Item</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topPad > 0 ? (
+                <tr aria-hidden="true">
+                  <td colSpan={colCount} style={{ height: topPad, padding: 0, border: 0 }} />
+                </tr>
+              ) : null}
+              {visible.map((entry) => (
+                <tr key={entry.id}>
+                  <td className="activity-log-time">{formatLogTime(entry.createdAt)}</td>
+                  <td>
+                    <span className="activity-log-user">{entry.actorName || "Unknown"}</span>
+                    <span
+                      className={`activity-log-role is-${
+                        entry.actorRole === "person" ? "customer" : "agent"
+                      }`}
+                    >
+                      {entry.actorRole === "person" ? "Customer" : "Agent"}
+                    </span>
+                  </td>
+                  <td>
+                    <span className={`activity-log-action is-${entry.action}`}>
+                      {LOG_ACTION_LABELS[entry.action] || entry.action}
+                    </span>
+                  </td>
+                  <td className="activity-log-item">{logItemLabel(entry)}</td>
+                </tr>
+              ))}
+              {bottomPad > 0 ? (
+                <tr aria-hidden="true">
+                  <td colSpan={colCount} style={{ height: bottomPad, padding: 0, border: 0 }} />
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        )}
+        {loadingMore ? (
+          <p className="muted activity-log-empty">Loading more…</p>
+        ) : null}
+      </div>
+      {confirmClear ? (
+        <div
+          className="confirm-backdrop"
+          role="presentation"
+          onClick={() => !clearing && setConfirmClear(false)}
+        >
+          <div
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="clear-log-title"
+            aria-describedby="clear-log-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="clear-log-title">Are you sure?</h2>
+            <p id="clear-log-desc">
+              Clear all activity log entries? This cannot be undone.
+            </p>
+            <div className="form-actions">
+              <CancelIconButton
+                disabled={clearing}
+                onClick={() => setConfirmClear(false)}
+              />
+              <button
+                type="button"
+                className="btn danger-solid"
+                disabled={clearing}
+                onClick={confirmClearLog}
+              >
+                {clearing ? "Clearing…" : "Yes, clear log"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -4732,6 +5974,9 @@ function CompanyPeoplePanel({
   onAddPerson,
   onUpdatePerson,
   onDeletePerson,
+  onOpenLog,
+  initialViewingId = null,
+  selectedPersonIdRef,
 }) {
   const listRef = useRef(null);
   const [draft, setDraft] = useState({
@@ -4743,7 +5988,7 @@ function CompanyPeoplePanel({
     locationId: "",
   });
   const [showCreate, setShowCreate] = useState(false);
-  const [viewingId, setViewingId] = useState(null);
+  const [viewingId, setViewingId] = useState(initialViewingId || null);
   const [editingId, setEditingId] = useState(null);
   const [personEdit, setPersonEdit] = useState({
     name: "",
@@ -4761,6 +6006,14 @@ function CompanyPeoplePanel({
   const viewingLocationName = viewingPerson
     ? locations.find((row) => row.id === viewingPerson.locationId)?.name || ""
     : "";
+
+  if (selectedPersonIdRef) selectedPersonIdRef.current = viewingId;
+
+  useEffect(() => {
+    return () => {
+      if (selectedPersonIdRef) selectedPersonIdRef.current = null;
+    };
+  }, [selectedPersonIdRef]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4991,6 +6244,11 @@ function CompanyPeoplePanel({
                 </div>
               </div>
               <div className="company-card-actions">
+                <LogIconButton
+                  label="Activity log"
+                  disabled={saving}
+                  onClick={() => onOpenLog?.(viewingPerson.id)}
+                />
                 <EditIconButton
                   label="Edit person"
                   disabled={saving}
@@ -5108,6 +6366,11 @@ function CompanyPeoplePanel({
                   />
                 </button>
                 <div className="person-row-actions">
+                  <LogIconButton
+                    label="Activity log"
+                    disabled={saving}
+                    onClick={() => onOpenLog?.(person.id)}
+                  />
                   <EditIconButton
                     label="Edit person"
                     disabled={saving}
@@ -5404,6 +6667,14 @@ function CompaniesView({
   manufacturers = [],
   assetTypes = [],
   saving,
+  initialCompanyId = null,
+  initialPersonId = null,
+  initialSection = "people",
+  selectedCompanyIdRef,
+  selectedPersonIdRef,
+  selectedCompanySectionRef,
+  onConsumedRestore,
+  onOpenLog,
   onCreateCompany,
   onUpdateCompany,
   onDeleteCompany,
@@ -5426,12 +6697,29 @@ function CompaniesView({
   const [firstPersonPassword, setFirstPersonPassword] = useState("");
   const [showCreateCompany, setShowCreateCompany] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
-  const [selectedCompanyId, setSelectedCompanyId] = useState(null);
-  const [openSection, setOpenSection] = useState("people");
+  const [selectedCompanyId, setSelectedCompanyId] = useState(
+    initialCompanyId || null
+  );
+  const [openSection, setOpenSection] = useState(initialSection || "people");
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyEdit, setCompanyEdit] = useState({ name: "", details: "", image: "" });
   const selectedCompany =
     companies.find((company) => company.id === selectedCompanyId) ?? null;
+
+  if (selectedCompanyIdRef) selectedCompanyIdRef.current = selectedCompanyId;
+  if (selectedCompanySectionRef) {
+    selectedCompanySectionRef.current = selectedCompany ? openSection : null;
+  }
+
+  useEffect(() => {
+    if (initialCompanyId) onConsumedRestore?.();
+    return () => {
+      if (selectedCompanyIdRef) selectedCompanyIdRef.current = null;
+      if (selectedPersonIdRef) selectedPersonIdRef.current = null;
+    };
+    // Restore the company/person we came back from once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function resetCreateForm() {
     setCompanyName("");
@@ -5564,7 +6852,7 @@ function CompaniesView({
               setEditingCompany(false);
             }}
           >
-            ← Customers
+            Customers
           </button>
           {!editingCompany && (
             <div className="company-card-actions">
@@ -5683,9 +6971,12 @@ function CompaniesView({
             <CompanyPeoplePanel
               company={selectedCompany}
               saving={saving}
+              initialViewingId={initialPersonId}
+              selectedPersonIdRef={selectedPersonIdRef}
               onAddPerson={onAddPerson}
               onUpdatePerson={onUpdatePerson}
               onDeletePerson={onDeletePerson}
+              onOpenLog={(personId) => onOpenLog?.(personId)}
             />
           )}
           {openSection === "locations" && !editingCompany && (
@@ -6183,7 +7474,7 @@ function TicketDetail({
             className="btn ghost compact customer-back"
             onClick={onBack}
           >
-            ← Tickets
+            Tickets
           </button>
           <div className="ticket-head-fields">
             <label>

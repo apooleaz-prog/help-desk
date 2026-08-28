@@ -24,13 +24,16 @@ import {
 } from "./passwordPages.js";
 import {
   DEFAULT_AGENT,
+  DEFAULT_AGENT_COLOR,
   PRIORITIES,
   SQLITE_PATH,
   STATUSES,
+  normalizeAgentColor,
   persistDurationMinutes,
   enrichTicket,
   findCompany,
   findPerson,
+  findAgent,
   findPersonByEmail,
   findPersonById,
   findPasswordReset,
@@ -72,6 +75,13 @@ import {
   countAssetsByCompany,
   countLocationsByCompany,
   removeCompany,
+  insertActivityLog,
+  listActivityLogs,
+  listActivityLogActors,
+  clearActivityLog,
+  isDateKey,
+  listCalendarSlots,
+  upsertCalendarSlot,
 } from "./db.js";
 
 const app = express();
@@ -173,6 +183,53 @@ function fieldChangeComment(agent, kind, body, customerVisible = false) {
     customerVisible,
     createdAt: new Date().toISOString(),
   };
+}
+
+function actorFrom(source) {
+  if (source?.agent) {
+    return {
+      actorRole: "agent",
+      actorId: source.agent.id,
+      actorName: source.agent.name || "",
+      actorEmail: source.agent.email || "",
+    };
+  }
+  if (source?.person) {
+    return {
+      actorRole: "person",
+      actorId: source.person.id,
+      actorName: source.person.name || "",
+      actorEmail: source.person.email || "",
+    };
+  }
+  if (source?.id && (source.role === "agent" || source.role === "person")) {
+    return {
+      actorRole: source.role,
+      actorId: source.id,
+      actorName: source.name || "",
+      actorEmail: source.email || "",
+    };
+  }
+  return {
+    actorRole: "system",
+    actorId: "",
+    actorName: "System",
+    actorEmail: "",
+  };
+}
+
+async function recordActivity(source, fields) {
+  try {
+    await insertActivityLog({
+      ...actorFrom(source),
+      action: fields.action,
+      resourceType: fields.resourceType || "",
+      resourceId: fields.resourceId || "",
+      resourceName: fields.resourceName || "",
+    });
+  } catch (err) {
+    console.error("Failed to record activity:", err);
+  }
 }
 
 function mineFilterMode(mine) {
@@ -308,6 +365,10 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid email or password" });
     }
     const token = await createSession({ agentId: agent.id });
+    await recordActivity(
+      { role: "agent", id: agent.id, name: agent.name, email: agent.email },
+      { action: "login" }
+    );
     return res.json({ token, role: "agent", agent: publicAgent(agent) });
   }
 
@@ -317,6 +378,15 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   const token = await createSession({ personId: match.person.id });
+  await recordActivity(
+    {
+      role: "person",
+      id: match.person.id,
+      name: match.person.name,
+      email: match.person.email,
+    },
+    { action: "login" }
+  );
   res.json({
     token,
     role: "person",
@@ -515,6 +585,30 @@ app.post("/api/auth/reset-password", async (req, res) => {
 app.post("/api/auth/logout", async (req, res) => {
   const token = getBearerToken(req);
   if (token) {
+    const db = await readDb();
+    const session = db.sessions.find((s) => s.token === token);
+    if (session?.agentId) {
+      const agent = findAgent(db, session.agentId);
+      if (agent) {
+        await recordActivity(
+          { role: "agent", id: agent.id, name: agent.name, email: agent.email },
+          { action: "logout" }
+        );
+      }
+    } else if (session?.personId) {
+      const match = findPersonById(db, session.personId);
+      if (match) {
+        await recordActivity(
+          {
+            role: "person",
+            id: match.person.id,
+            name: match.person.name,
+            email: match.person.email,
+          },
+          { action: "logout" }
+        );
+      }
+    }
     await destroySession(token);
   }
   res.json({ ok: true });
@@ -589,7 +683,7 @@ app.get("/api/agents", requireAgent, async (_req, res) => {
 });
 
 app.post("/api/agents", requireAgent, async (req, res) => {
-  const { name, email, phone, password } = req.body ?? {};
+  const { name, email, phone, password, color } = req.body ?? {};
 
   if (!name?.trim() || !email?.trim() || !password) {
     return res.status(400).json({ error: "name, email, and password are required" });
@@ -597,6 +691,14 @@ app.post("/api/agents", requireAgent, async (req, res) => {
 
   if (String(password).length < 6) {
     return res.status(400).json({ error: "password must be at least 6 characters" });
+  }
+
+  const agentColor =
+    color === undefined || color === null || color === ""
+      ? DEFAULT_AGENT_COLOR
+      : normalizeAgentColor(color);
+  if (!agentColor) {
+    return res.status(400).json({ error: "invalid color" });
   }
 
   const db = await readDb();
@@ -612,6 +714,7 @@ app.post("/api/agents", requireAgent, async (req, res) => {
     name: name.trim(),
     email: normalizedEmail,
     ...(normalizedPhone ? { phone: normalizedPhone } : {}),
+    color: agentColor,
     passwordHash: hashPassword(password),
     createdAt: now,
     updatedAt: now,
@@ -619,6 +722,12 @@ app.post("/api/agents", requireAgent, async (req, res) => {
 
   db.agents.push(agent);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "agent",
+    resourceId: agent.id,
+    resourceName: agent.name,
+  });
 
   res.status(201).json(publicAgent(agent));
 });
@@ -630,7 +739,7 @@ app.patch("/api/agents/:id", requireAgent, async (req, res) => {
     return res.status(404).json({ error: "Agent not found" });
   }
 
-  const { name, email, phone, password } = req.body ?? {};
+  const { name, email, phone, password, color } = req.body ?? {};
   const agent = db.agents[index];
 
   if (name !== undefined) {
@@ -663,6 +772,14 @@ app.patch("/api/agents/:id", requireAgent, async (req, res) => {
     }
   }
 
+  if (color !== undefined) {
+    const agentColor = normalizeAgentColor(color);
+    if (!agentColor) {
+      return res.status(400).json({ error: "invalid color" });
+    }
+    agent.color = agentColor;
+  }
+
   if (password !== undefined && password !== "") {
     if (String(password).length < 6) {
       return res.status(400).json({ error: "password must be at least 6 characters" });
@@ -692,8 +809,51 @@ app.delete("/api/agents/:id", requireAgent, async (req, res) => {
   const [removed] = db.agents.splice(index, 1);
   db.sessions = db.sessions.filter((s) => s.agentId !== removed.id);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "agent",
+    resourceId: removed.id,
+    resourceName: removed.name,
+  });
 
   res.json({ ok: true });
+});
+
+app.get("/api/calendar", requireAgent, async (req, res) => {
+  const from = String(req.query.from ?? "").trim();
+  const to = String(req.query.to ?? "").trim();
+  if (!isDateKey(from) || !isDateKey(to)) {
+    return res.status(400).json({ error: "from and to dates are required" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+  const slots = await listCalendarSlots(from, to);
+  res.json(slots);
+});
+
+app.put("/api/calendar", requireAgent, async (req, res) => {
+  const date = String(req.body?.date ?? "").trim();
+  const session = String(req.body?.session ?? "").trim();
+  const agentIdRaw = req.body?.agentId;
+  if (!isDateKey(date)) {
+    return res.status(400).json({ error: "a valid date is required" });
+  }
+  if (session !== "morning" && session !== "afternoon") {
+    return res.status(400).json({ error: "session must be morning or afternoon" });
+  }
+  const agentId =
+    agentIdRaw === undefined || agentIdRaw === null || agentIdRaw === ""
+      ? ""
+      : String(agentIdRaw).trim();
+  if (agentId) {
+    const db = await readDb();
+    if (!findAgent(db, agentId)) {
+      return res.status(400).json({ error: "Agent not found" });
+    }
+  }
+  const slot = await upsertCalendarSlot({ date, session, agentId });
+  res.json(slot);
 });
 
 function publicManufacturer(row) {
@@ -705,6 +865,82 @@ function publicManufacturer(row) {
 app.get("/api/manufacturers", requireAgent, async (_req, res) => {
   const rows = await listManufacturers();
   res.json(rows.map(publicManufacturer));
+});
+
+app.get("/api/activity-log/users", requireAgent, async (_req, res) => {
+  const [{ agents, companies }, logActors] = await Promise.all([
+    readDb(),
+    listActivityLogActors(),
+  ]);
+  const users = new Map();
+  for (const actor of logActors) {
+    if (actor.id) users.set(actor.id, actor);
+  }
+  for (const agent of agents) {
+    users.set(agent.id, {
+      id: agent.id,
+      name: agent.name,
+      email: agent.email,
+      role: "agent",
+    });
+  }
+  for (const company of companies) {
+    for (const person of company.people ?? []) {
+      users.set(person.id, {
+        id: person.id,
+        name: person.name,
+        email: person.email,
+        role: "person",
+        companyName: company.name,
+      });
+    }
+  }
+  const sorted = [...users.values()].sort((a, b) => {
+    if (a.role !== b.role) return a.role === "agent" ? -1 : 1;
+    return String(a.name).localeCompare(String(b.name));
+  });
+  res.json(sorted);
+});
+
+app.get("/api/activity-log", requireAgent, async (req, res) => {
+  const actorId = String(req.query.userId ?? req.query.actorId ?? "").trim();
+  const actorRoleRaw = String(req.query.role ?? req.query.actorRole ?? "").trim();
+  const actorRole =
+    actorRoleRaw === "agent" || actorRoleRaw === "person" ? actorRoleRaw : "";
+  const actionRaw = String(req.query.action ?? "").trim();
+  const action = ["login", "logout", "create", "delete"].includes(actionRaw)
+    ? actionRaw
+    : "";
+  const limit = Number.parseInt(String(req.query.limit ?? "200"), 10);
+  const before = String(req.query.before ?? "").trim();
+  let beforeCreatedAt = "";
+  let beforeId = "";
+  if (before) {
+    const split = before.indexOf("|");
+    if (split > 0) {
+      beforeCreatedAt = before.slice(0, split);
+      beforeId = before.slice(split + 1);
+    } else {
+      beforeCreatedAt = before;
+    }
+  }
+  const take = Math.min(Math.max(Number.isFinite(limit) ? limit : 200, 1), 400);
+  const entries = await listActivityLogs({
+    actorId,
+    actorRole,
+    action,
+    limit: take + 1,
+    beforeCreatedAt,
+    beforeId,
+  });
+  const hasMore = entries.length > take;
+  if (hasMore) entries.length = take;
+  res.json({ entries, hasMore });
+});
+
+app.delete("/api/activity-log", requireAgent, async (_req, res) => {
+  await clearActivityLog();
+  res.json({ ok: true });
 });
 
 app.post("/api/manufacturers", requireAgent, async (req, res) => {
@@ -742,6 +978,12 @@ app.post("/api/manufacturers", requireAgent, async (req, res) => {
     image: normalizedImage || "",
     createdAt: now,
     updatedAt: now,
+  });
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "manufacturer",
+    resourceId: manufacturer.id,
+    resourceName: manufacturer.name,
   });
 
   res.status(201).json(publicManufacturer(manufacturer));
@@ -797,10 +1039,17 @@ app.patch("/api/manufacturers/:id", requireAgent, async (req, res) => {
 });
 
 app.delete("/api/manufacturers/:id", requireAgent, async (req, res) => {
+  const current = await findManufacturerById(req.params.id);
   const removed = await removeManufacturer(req.params.id);
   if (!removed) {
     return res.status(404).json({ error: "Manufacturer not found" });
   }
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "manufacturer",
+    resourceId: req.params.id,
+    resourceName: current?.name || req.params.id,
+  });
   res.json({ ok: true });
 });
 
@@ -842,6 +1091,12 @@ app.post("/api/asset-types", requireAgent, async (req, res) => {
     image: normalizedImage || "",
     createdAt: now,
     updatedAt: now,
+  });
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "assetType",
+    resourceId: assetType.id,
+    resourceName: assetType.name,
   });
 
   res.status(201).json(assetType);
@@ -892,10 +1147,17 @@ app.patch("/api/asset-types/:id", requireAgent, async (req, res) => {
 });
 
 app.delete("/api/asset-types/:id", requireAgent, async (req, res) => {
+  const current = await findAssetTypeById(req.params.id);
   const removed = await removeAssetType(req.params.id);
   if (!removed) {
     return res.status(404).json({ error: "Asset type not found" });
   }
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "assetType",
+    resourceId: req.params.id,
+    resourceName: current?.name || req.params.id,
+  });
   res.json({ ok: true });
 });
 
@@ -989,6 +1251,20 @@ app.post("/api/companies", requireAgent, async (req, res) => {
 
   db.companies.push(company);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "company",
+    resourceId: company.id,
+    resourceName: company.name,
+  });
+  for (const person of parsedPeople) {
+    await recordActivity(req, {
+      action: "create",
+      resourceType: "person",
+      resourceId: person.id,
+      resourceName: person.name,
+    });
+  }
 
   res.status(201).json(publicCompany(company));
 });
@@ -1097,6 +1373,12 @@ app.post("/api/companies/:id/people", requireAgent, async (req, res) => {
 
   db.companies[index].people.push(person);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "person",
+    resourceId: person.id,
+    resourceName: person.name,
+  });
 
   res.status(201).json(publicPerson(person));
 });
@@ -1213,6 +1495,12 @@ app.delete("/api/companies/:companyId/people/:personId", requireAgent, async (re
   const removedTickets = db.tickets.filter((t) => t.personId === removed.id);
   db.tickets = db.tickets.filter((t) => t.personId !== removed.id);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "person",
+    resourceId: removed.id,
+    resourceName: removed.name,
+  });
 
   res.json({
     ok: true,
@@ -1293,6 +1581,12 @@ app.post("/api/companies/:id/assets", requireAgent, async (req, res) => {
     locationId: assignedLocation.locationId || "",
     createdAt: now,
     updatedAt: now,
+  });
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "asset",
+    resourceId: asset.id,
+    resourceName: asset.name || asset.assetNumber || asset.id,
   });
 
   res.status(201).json(asset);
@@ -1392,10 +1686,17 @@ app.patch("/api/companies/:companyId/assets/:assetId", requireAgent, async (req,
 });
 
 app.delete("/api/companies/:companyId/assets/:assetId", requireAgent, async (req, res) => {
+  const current = await findAssetById(req.params.companyId, req.params.assetId);
   const removed = await removeAsset(req.params.companyId, req.params.assetId);
   if (!removed) {
     return res.status(404).json({ error: "Asset not found" });
   }
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "asset",
+    resourceId: req.params.assetId,
+    resourceName: current?.name || current?.assetNumber || req.params.assetId,
+  });
   res.json({ ok: true });
 });
 
@@ -1431,6 +1732,12 @@ app.post("/api/companies/:id/locations", requireAgent, async (req, res) => {
     createdAt: now,
     updatedAt: now,
   });
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "location",
+    resourceId: location.id,
+    resourceName: location.name,
+  });
   res.status(201).json(location);
 });
 
@@ -1457,10 +1764,17 @@ app.patch("/api/companies/:companyId/locations/:locationId", requireAgent, async
 });
 
 app.delete("/api/companies/:companyId/locations/:locationId", requireAgent, async (req, res) => {
+  const current = await findLocationById(req.params.companyId, req.params.locationId);
   const removed = await removeLocation(req.params.companyId, req.params.locationId);
   if (!removed) {
     return res.status(404).json({ error: "Location not found" });
   }
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "location",
+    resourceId: req.params.locationId,
+    resourceName: current?.name || req.params.locationId,
+  });
   res.json({ ok: true });
 });
 
@@ -1478,6 +1792,12 @@ app.delete("/api/companies/:id", requireAgent, async (req, res) => {
   await removeLocationsForCompany(removed.id);
   await removeCompany(removed.id);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "company",
+    resourceId: removed.id,
+    resourceName: removed.name,
+  });
 
   res.json({
     ok: true,
@@ -1633,6 +1953,12 @@ app.post("/api/tickets", async (req, res) => {
 
   db.tickets.unshift(ticket);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "create",
+    resourceType: "ticket",
+    resourceId: ticket.id,
+    resourceName: ticket.title,
+  });
 
   res.status(201).json(enrichTicket(db, ticket, req.role));
 });
@@ -1729,8 +2055,14 @@ app.delete("/api/tickets/:id", requireAgent, async (req, res) => {
     return res.status(404).json({ error: "Ticket not found" });
   }
 
-  db.tickets.splice(index, 1);
+  const [removed] = db.tickets.splice(index, 1);
   await writeDb(db);
+  await recordActivity(req, {
+    action: "delete",
+    resourceType: "ticket",
+    resourceId: removed.id,
+    resourceName: removed.title,
+  });
   res.json({ ok: true });
 });
 

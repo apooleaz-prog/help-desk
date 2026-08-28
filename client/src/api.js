@@ -318,3 +318,40 @@ export function addComment(id, payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function fetchActivityLogs({
+  userId = "",
+  role = "",
+  action = "",
+  limit = 200,
+  before = "",
+} = {}) {
+  const params = new URLSearchParams();
+  if (userId) params.set("userId", userId);
+  if (role) params.set("role", role);
+  if (action) params.set("action", action);
+  if (limit) params.set("limit", String(limit));
+  if (before) params.set("before", before);
+  const qs = params.toString();
+  return request(`/activity-log${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchActivityLogUsers() {
+  return request("/activity-log/users");
+}
+
+export function clearActivityLogs() {
+  return request("/activity-log", { method: "DELETE" });
+}
+
+export function fetchCalendarSlots(from, to) {
+  const params = new URLSearchParams({ from, to });
+  return request(`/calendar?${params}`);
+}
+
+export function updateCalendarSlot(payload) {
+  return request("/calendar", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}

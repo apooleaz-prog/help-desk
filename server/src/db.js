@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import fs from "fs";
+import { randomUUID } from "node:crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import pg from "pg";
@@ -21,6 +22,25 @@ export const DEFAULT_AGENT = {
   password: "deskline123",
 };
 
+export const AGENT_COLORS = [
+  "#e11d48",
+  "#ea580c",
+  "#d97706",
+  "#16a34a",
+  "#0d9488",
+  "#2563eb",
+  "#4f46e5",
+  "#9333ea",
+  "#db2777",
+  "#64748b",
+];
+export const DEFAULT_AGENT_COLOR = "#0d9488";
+
+export function normalizeAgentColor(value) {
+  const hex = String(value ?? "").trim().toLowerCase();
+  return AGENT_COLORS.includes(hex) ? hex : null;
+}
+
 let sqliteDb = null;
 let pgPool = null;
 let readyPromise = null;
@@ -33,6 +53,7 @@ function seedAgents() {
       name: DEFAULT_AGENT.name,
       email: DEFAULT_AGENT.email,
       passwordHash: bcrypt.hashSync(DEFAULT_AGENT.password, 10),
+      color: DEFAULT_AGENT_COLOR,
       createdAt: now,
       updatedAt: now,
     },
@@ -117,6 +138,7 @@ const SCHEMA_SQL = `
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     phone TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT '#0d9488',
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -213,6 +235,35 @@ const SCHEMA_SQL = `
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS activity_log (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    actor_role TEXT NOT NULL DEFAULT '',
+    actor_id TEXT NOT NULL DEFAULT '',
+    actor_name TEXT NOT NULL DEFAULT '',
+    actor_email TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL DEFAULT '',
+    resource_id TEXT NOT NULL DEFAULT '',
+    resource_name TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS activity_log_created_idx
+    ON activity_log (created_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS activity_log_actor_idx
+    ON activity_log (actor_id, created_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS activity_log_action_idx
+    ON activity_log (action, created_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS activity_log_role_idx
+    ON activity_log (actor_role, created_at DESC, id DESC);
+  CREATE TABLE IF NOT EXISTS calendar_slots (
+    date TEXT NOT NULL,
+    session TEXT NOT NULL,
+    agent_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (date, session)
+  );
+  CREATE INDEX IF NOT EXISTS calendar_slots_date_idx
+    ON calendar_slots (date, session);
 `;
 
 function loadLegacyJson() {
@@ -450,7 +501,7 @@ function writeSqliteSnapshot(database, data) {
       DELETE FROM assets; DELETE FROM locations;
     `);
     const insertAgent = database.prepare(
-      `INSERT INTO agents (id, name, email, phone, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO agents (id, name, email, phone, color, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const agent of data.agents ?? []) {
       insertAgent.run(
@@ -458,6 +509,7 @@ function writeSqliteSnapshot(database, data) {
         agent.name,
         agent.email,
         agent.phone ?? "",
+        agent.color || DEFAULT_AGENT_COLOR,
         agent.passwordHash,
         agent.createdAt,
         agent.updatedAt
@@ -622,13 +674,14 @@ function writeSqliteSnapshot(database, data) {
 function readSqliteSnapshot(database) {
   const agents = database
     .prepare(
-      `SELECT id, name, email, phone, password_hash AS passwordHash, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, name, email, phone, color, password_hash AS passwordHash, created_at AS createdAt, updated_at AS updatedAt
        FROM agents ORDER BY name`
     )
     .all()
     .map((a) => ({
       ...a,
       phone: a.phone || undefined,
+      color: a.color || DEFAULT_AGENT_COLOR,
     }));
   const sessions = database
     .prepare(
@@ -721,13 +774,14 @@ async function writePgSnapshot(pool, data) {
     `);
     for (const agent of data.agents ?? []) {
       await client.query(
-        `INSERT INTO agents (id, name, email, phone, password_hash, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        `INSERT INTO agents (id, name, email, phone, color, password_hash, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [
           agent.id,
           agent.name,
           agent.email,
           agent.phone ?? "",
+          agent.color || DEFAULT_AGENT_COLOR,
           agent.passwordHash,
           agent.createdAt,
           agent.updatedAt,
@@ -899,12 +953,13 @@ async function writePgSnapshot(pool, data) {
 async function readPgSnapshot(pool) {
   const agents = (
     await pool.query(
-      `SELECT id, name, email, phone, password_hash AS "passwordHash", created_at AS "createdAt", updated_at AS "updatedAt"
+      `SELECT id, name, email, phone, color, password_hash AS "passwordHash", created_at AS "createdAt", updated_at AS "updatedAt"
        FROM agents ORDER BY name`
     )
   ).rows.map((a) => ({
     ...a,
     phone: a.phone || undefined,
+    color: a.color || DEFAULT_AGENT_COLOR,
   }));
   const sessions = (
     await pool.query(
@@ -991,6 +1046,11 @@ function getSqlite() {
   const agentCols = sqliteDb.prepare(`PRAGMA table_info(agents)`).all();
   if (!agentCols.some((col) => col.name === "phone")) {
     sqliteDb.exec(`ALTER TABLE agents ADD COLUMN phone TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!agentCols.some((col) => col.name === "color")) {
+    sqliteDb.exec(
+      `ALTER TABLE agents ADD COLUMN color TEXT NOT NULL DEFAULT '${DEFAULT_AGENT_COLOR}'`
+    );
   }
   const assetTypeCols = sqliteDb.prepare(`PRAGMA table_info(asset_types)`).all();
   if (assetTypeCols.length && !assetTypeCols.some((col) => col.name === "image")) {
@@ -1095,6 +1155,9 @@ async function getPg() {
   );
   await pgPool.query(
     `ALTER TABLE agents ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE agents ADD COLUMN IF NOT EXISTS color TEXT NOT NULL DEFAULT '${DEFAULT_AGENT_COLOR}'`
   );
   await pgPool.query(
     `ALTER TABLE asset_types ADD COLUMN IF NOT EXISTS image TEXT NOT NULL DEFAULT ''`
@@ -1917,6 +1980,7 @@ function publicAgent(agent) {
     name: agent.name,
     email: agent.email,
     ...(agent.phone ? { phone: agent.phone } : {}),
+    color: agent.color || DEFAULT_AGENT_COLOR,
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
   };
@@ -2070,6 +2134,293 @@ async function deletePasswordReset(tokenHash) {
   getSqlite().prepare(`DELETE FROM password_resets WHERE token_hash = ?`).run(tokenHash);
 }
 
+const ACTIVITY_LOG_SELECT_SQLITE = `
+  SELECT id, created_at AS createdAt,
+         actor_role AS actorRole, actor_id AS actorId,
+         actor_name AS actorName, actor_email AS actorEmail,
+         action, resource_type AS resourceType, resource_id AS resourceId,
+         resource_name AS resourceName
+  FROM activity_log
+`;
+
+const ACTIVITY_LOG_SELECT_PG = `
+  SELECT id, created_at AS "createdAt",
+         actor_role AS "actorRole", actor_id AS "actorId",
+         actor_name AS "actorName", actor_email AS "actorEmail",
+         action, resource_type AS "resourceType", resource_id AS "resourceId",
+         resource_name AS "resourceName"
+  FROM activity_log
+`;
+
+function mapActivityLog(row) {
+  return {
+    id: row.id,
+    createdAt: row.createdAt,
+    actorRole: row.actorRole || "",
+    actorId: row.actorId || "",
+    actorName: row.actorName || "",
+    actorEmail: row.actorEmail || "",
+    action: row.action,
+    resourceType: row.resourceType || "",
+    resourceId: row.resourceId || "",
+    resourceName: row.resourceName || "",
+  };
+}
+
+function clipLogText(value, max = 240) {
+  return String(value ?? "").trim().slice(0, max);
+}
+
+async function insertActivityLog(entry) {
+  await ensureReady();
+  const row = {
+    id: entry.id || randomUUID(),
+    createdAt: entry.createdAt || new Date().toISOString(),
+    actorRole: clipLogText(entry.actorRole, 32),
+    actorId: clipLogText(entry.actorId, 64),
+    actorName: clipLogText(entry.actorName),
+    actorEmail: clipLogText(entry.actorEmail),
+    action: clipLogText(entry.action, 32),
+    resourceType: clipLogText(entry.resourceType, 32),
+    resourceId: clipLogText(entry.resourceId, 64),
+    resourceName: clipLogText(entry.resourceName),
+  };
+  if (!row.action) return null;
+  const values = [
+    row.id,
+    row.createdAt,
+    row.actorRole,
+    row.actorId,
+    row.actorName,
+    row.actorEmail,
+    row.action,
+    row.resourceType,
+    row.resourceId,
+    row.resourceName,
+  ];
+  if (usePostgres()) {
+    await (
+      await getPg()
+    ).query(
+      `INSERT INTO activity_log (
+         id, created_at, actor_role, actor_id, actor_name, actor_email,
+         action, resource_type, resource_id, resource_name
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      values
+    );
+  } else {
+    getSqlite()
+      .prepare(
+        `INSERT INTO activity_log (
+           id, created_at, actor_role, actor_id, actor_name, actor_email,
+           action, resource_type, resource_id, resource_name
+         ) VALUES (?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(...values);
+  }
+  return mapActivityLog(row);
+}
+
+function activityLogWhere({ actorId, actorRole, action, beforeCreatedAt, beforeId }, placeholder) {
+  const where = [];
+  const params = [];
+  const next = () => placeholder(params.length + 1);
+  if (actorId) {
+    where.push(`actor_id = ${next()}`);
+    params.push(actorId);
+  }
+  if (actorRole) {
+    where.push(`actor_role = ${next()}`);
+    params.push(actorRole);
+  }
+  if (action) {
+    where.push(`action = ${next()}`);
+    params.push(action);
+  }
+  if (beforeCreatedAt && beforeId) {
+    where.push(`(created_at, id) < (${next()}, ${next()})`);
+    params.push(beforeCreatedAt, beforeId);
+  } else if (beforeCreatedAt) {
+    where.push(`created_at < ${next()}`);
+    params.push(beforeCreatedAt);
+  }
+  return {
+    sql: where.length ? `WHERE ${where.join(" AND ")}` : "",
+    params,
+  };
+}
+
+async function listActivityLogs({
+  actorId = "",
+  actorRole = "",
+  action = "",
+  limit = 200,
+  beforeCreatedAt = "",
+  beforeId = "",
+} = {}) {
+  await ensureReady();
+  const take = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  if (usePostgres()) {
+    const { sql, params } = activityLogWhere(
+      { actorId, actorRole, action, beforeCreatedAt, beforeId },
+      (index) => `$${index}`
+    );
+    const { rows } = await (
+      await getPg()
+    ).query(
+      `${ACTIVITY_LOG_SELECT_PG} ${sql} ORDER BY created_at DESC, id DESC LIMIT $${params.length + 1}`,
+      [...params, take]
+    );
+    return rows.map(mapActivityLog);
+  }
+  const { sql, params } = activityLogWhere(
+    { actorId, actorRole, action, beforeCreatedAt, beforeId },
+    () => "?"
+  );
+  return getSqlite()
+    .prepare(`${ACTIVITY_LOG_SELECT_SQLITE} ${sql} ORDER BY created_at DESC, id DESC LIMIT ?`)
+    .all(...params, take)
+    .map(mapActivityLog);
+}
+
+async function listActivityLogActors() {
+  await ensureReady();
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(
+      `SELECT DISTINCT ON (actor_id)
+         actor_id AS "id", actor_name AS "name", actor_email AS "email",
+         actor_role AS "role"
+       FROM activity_log
+       WHERE actor_id <> ''
+       ORDER BY actor_id, created_at DESC`
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name || "",
+      email: row.email || "",
+      role: row.role === "person" ? "person" : "agent",
+    }));
+  }
+  return getSqlite()
+    .prepare(
+      `SELECT actor_id AS id,
+              MAX(actor_name) AS name,
+              MAX(actor_email) AS email,
+              MAX(actor_role) AS role
+       FROM activity_log
+       WHERE actor_id <> ''
+       GROUP BY actor_id
+       ORDER BY MAX(created_at) DESC`
+    )
+    .all()
+    .map((row) => ({
+      id: row.id,
+      name: row.name || "",
+      email: row.email || "",
+      role: row.role === "person" ? "person" : "agent",
+    }));
+}
+
+async function clearActivityLog() {
+  await ensureReady();
+  if (usePostgres()) {
+    await (await getPg()).query(`DELETE FROM activity_log`);
+    return;
+  }
+  getSqlite().prepare(`DELETE FROM activity_log`).run();
+}
+
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isDateKey(value) {
+  if (!DATE_KEY_RE.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  );
+}
+
+function mapCalendarSlot(row) {
+  return {
+    date: row.date,
+    session: row.session,
+    agentId: row.agentId || "",
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function listCalendarSlots(from, to) {
+  await ensureReady();
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(
+      `SELECT date, session, agent_id AS "agentId", updated_at AS "updatedAt"
+       FROM calendar_slots
+       WHERE date >= $1 AND date <= $2
+       ORDER BY date, session`,
+      [from, to]
+    );
+    return rows.map(mapCalendarSlot);
+  }
+  return getSqlite()
+    .prepare(
+      `SELECT date, session, agent_id AS agentId, updated_at AS updatedAt
+       FROM calendar_slots
+       WHERE date >= ? AND date <= ?
+       ORDER BY date, session`
+    )
+    .all(from, to)
+    .map(mapCalendarSlot);
+}
+
+async function upsertCalendarSlot({ date, session, agentId }) {
+  await ensureReady();
+  const now = new Date().toISOString();
+  const assigned = String(agentId ?? "").trim();
+  if (!assigned) {
+    if (usePostgres()) {
+      await (
+        await getPg()
+      ).query(`DELETE FROM calendar_slots WHERE date = $1 AND session = $2`, [
+        date,
+        session,
+      ]);
+    } else {
+      getSqlite()
+        .prepare(`DELETE FROM calendar_slots WHERE date = ? AND session = ?`)
+        .run(date, session);
+    }
+    return { date, session, agentId: "", updatedAt: now };
+  }
+  if (usePostgres()) {
+    await (
+      await getPg()
+    ).query(
+      `INSERT INTO calendar_slots (date, session, agent_id, updated_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (date, session)
+       DO UPDATE SET agent_id = EXCLUDED.agent_id, updated_at = EXCLUDED.updated_at`,
+      [date, session, assigned, now]
+    );
+  } else {
+    getSqlite()
+      .prepare(
+        `INSERT INTO calendar_slots (date, session, agent_id, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (date, session)
+         DO UPDATE SET agent_id = excluded.agent_id, updated_at = excluded.updated_at`
+      )
+      .run(date, session, assigned, now);
+  }
+  return { date, session, agentId: assigned, updatedAt: now };
+}
+
 export {
   STATUSES,
   PRIORITIES,
@@ -2120,4 +2471,11 @@ export {
   replacePasswordReset,
   findPasswordReset,
   deletePasswordReset,
+  insertActivityLog,
+  listActivityLogs,
+  listActivityLogActors,
+  clearActivityLog,
+  isDateKey,
+  listCalendarSlots,
+  upsertCalendarSlot,
 };
