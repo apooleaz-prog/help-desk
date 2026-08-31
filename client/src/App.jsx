@@ -104,6 +104,13 @@ const AGENT_COLORS = [
 ];
 const DEFAULT_AGENT_COLOR = "#0d9488";
 const AGENT_COLOR_HEXES = new Set(AGENT_COLORS.map((c) => c.hex));
+const ADVANCED_VIEWS = new Set([
+  "agents",
+  "companies",
+  "manufacturers",
+  "assetTypes",
+  "activityLog",
+]);
 
 function agentColorValue(color) {
   const hex = String(color || "").trim().toLowerCase();
@@ -746,6 +753,7 @@ function App() {
   const [manufacturers, setManufacturers] = useState([]);
   const [assetTypes, setAssetTypes] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [activityLogUserId, setActivityLogUserId] = useState("");
   const [activityLogReturn, setActivityLogReturn] = useState(null);
   const [restoreAgentId, setRestoreAgentId] = useState(null);
@@ -823,6 +831,51 @@ function App() {
     setView("activityLog");
   }
 
+  function handleMenuNavigate(next) {
+    setMenuOpen(false);
+    if (ADVANCED_VIEWS.has(next)) {
+      setShowAdvanced(true);
+    } else {
+      setShowAdvanced(false);
+    }
+    if (next === "list") {
+      setView("list");
+      setSelected(null);
+      return;
+    }
+    if (next === "stats") {
+      setView("stats");
+      setSelected(null);
+      return;
+    }
+    if (next === "calendar") {
+      setView("calendar");
+      setSelected(null);
+      return;
+    }
+    if (next === "agents") {
+      setRestoreAgentId(null);
+      setView("agents");
+      return;
+    }
+    if (next === "companies") {
+      setRestoreCustomers(null);
+      setView("companies");
+      return;
+    }
+    if (next === "manufacturers") {
+      setView("manufacturers");
+      return;
+    }
+    if (next === "assetTypes") {
+      setView("assetTypes");
+      return;
+    }
+    if (next === "activityLog") {
+      openActivityLog();
+    }
+  }
+
   function clearSessionState() {
     setRole(null);
     setAgent(null);
@@ -830,7 +883,7 @@ function App() {
     setView("list");
     setSelected(null);
     setShowAdvanced(false);
-    setActivityLogUserId("");
+    setMenuOpen(false);
     setTickets([]);
     setOpenByPriority(emptyPriorityCounts());
     setTicketsByPriority(emptyPriorityCounts());
@@ -1052,6 +1105,7 @@ function App() {
       }
       setView("list");
       setShowAdvanced(false);
+      setMenuOpen(false);
       setCompanyFilter("");
       setPriorityFilter([]);
       setQuery("");
@@ -1560,246 +1614,46 @@ function App() {
     <div className="app">
       <header className="chrome">
         <div className="topbar">
-        <div className="brand-block">
-          <button
-            type="button"
-            className="brand"
-            onClick={() => {
-              setShowAdvanced(false);
-              setView("list");
-              setSelected(null);
-            }}
-          >
-            <FiveWitsLogo className="brand-logo" />
-            <span className="brand-copy">
-              <span className="brand-name">Help Desk</span>
-              <span
-                className="agent-chip"
-                title={
-                  isPerson
-                    ? [person.email, person.phone, person.companyName]
-                        .filter(Boolean)
-                        .join(" · ")
-                    : [agent.email, agent.phone].filter(Boolean).join(" · ")
-                }
-              >
-                ({displayUser.name})
-              </span>
-            </span>
-          </button>
-        </div>
-        <nav className="top-actions">
-          <button
-            type="button"
-            className={`btn icon ghost icon-tickets${view === "list" ? " is-active" : ""}`}
-            onClick={() => {
-              setShowAdvanced(false);
-              setView("list");
-              setSelected(null);
-            }}
-            aria-label="Tickets"
-            aria-pressed={view === "list"}
-            data-tooltip="Tickets"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                fill="#2563eb"
-                d="M4.5 5.25A1.75 1.75 0 0 1 6.25 3.5h11.5A1.75 1.75 0 0 1 19.5 5.25v13.5A1.75 1.75 0 0 1 17.75 20.5H6.25A1.75 1.75 0 0 1 4.5 18.75V5.25Z"
-              />
-              <path
-                fill="var(--icon-paper)"
-                d="M7.25 7h9.5a.75.75 0 0 1 0 1.5h-9.5a.75.75 0 0 1 0-1.5Zm0 3.25h9.5a.75.75 0 0 1 0 1.5h-9.5a.75.75 0 0 1 0-1.5Zm0 3.25h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5Z"
-              />
-              <path
-                fill="#1d4ed8"
-                d="M4.5 9.1c.9 0 1.65.75 1.65 1.65S5.4 12.4 4.5 12.4v-3.3Zm15 0V12.4c-.9 0-1.65-.75-1.65-1.65S18.6 9.1 19.5 9.1Z"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className={`btn icon ghost icon-stats${view === "stats" ? " is-active" : ""}`}
-            onClick={() => {
-              setShowAdvanced(false);
-              setView("stats");
-              setSelected(null);
-            }}
-            aria-label="Stats"
-            aria-pressed={view === "stats"}
-            data-tooltip="Stats"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path fill="var(--icon-paper)" d="M3.5 19.5h17v1.75h-17V19.5Z" />
-              <path fill="#2563eb" d="M5.25 11.5h2.6V19.5h-2.6v-8Z" />
-              <path fill="#f59e0b" d="M10.7 8h2.6v11.5h-2.6V8Z" />
-              <path fill="#e4572e" d="M16.15 4.5h2.6V19.5h-2.6V4.5Z" />
-            </svg>
-          </button>
-          {isAgent && (
+          <div className="brand-block">
             <button
               type="button"
-              className={`btn icon ghost icon-calendar${view === "calendar" ? " is-active" : ""}`}
+              className="brand"
               onClick={() => {
+                setMenuOpen(false);
                 setShowAdvanced(false);
-                setView("calendar");
+                setView("list");
                 setSelected(null);
               }}
-              aria-label="Calendar"
-              aria-pressed={view === "calendar"}
-              data-tooltip="Calendar"
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  fill="#4f46e5"
-                  d="M7 3.4h1.6V5h6.8V3.4H17V5h1.6A1.9 1.9 0 0 1 20.5 6.9v12.2a1.9 1.9 0 0 1-1.9 1.9H5.4A1.9 1.9 0 0 1 3.5 19.1V6.9A1.9 1.9 0 0 1 5.4 5H7V3.4Z"
-                />
-                <path fill="var(--icon-paper)" d="M5.2 9.1h13.6v10.2H5.2V9.1Z" />
-                <path fill="#f59e0b" d="M6.4 10.4h5.3v4.15H6.4V10.4Z" />
-                <path fill="#2563eb" d="M12.3 10.4h5.3v4.15h-5.3V10.4Z" />
-              </svg>
+              <FiveWitsLogo className="brand-logo" />
+              <span className="brand-copy">
+                <span className="brand-name">Help Desk</span>
+                <span
+                  className="agent-chip"
+                  title={
+                    isPerson
+                      ? [person.email, person.phone, person.companyName]
+                          .filter(Boolean)
+                          .join(" · ")
+                      : [agent.email, agent.phone].filter(Boolean).join(" · ")
+                  }
+                >
+                  ({displayUser.name})
+                </span>
+              </span>
             </button>
-          )}
-          {isAgent && (
-            <button
-              type="button"
-              className={`btn icon ghost icon-advanced${showAdvanced ? " is-open" : ""}`}
-              onClick={() => setShowAdvanced(true)}
-              aria-label="Advanced"
-              aria-pressed={showAdvanced}
-              data-tooltip="Advanced"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  fill="#7c3aed"
-                  d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96c-.5-.37-1.04-.68-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.26-1.13.57-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.8 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.92 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.13.24.43.34.7.22l2.39-.96c.5.37 1.04.68 1.63.94l.36 2.54c.05.24.26.42.49.42h3.8c.24 0 .45-.18.5-.42l.36-2.54c.59-.26 1.13-.57 1.63-.94l2.39.96c.27.11.56.02.7-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"
-                />
-                <circle cx="12" cy="12" r="2.05" fill="var(--icon-paper)" />
-              </svg>
-            </button>
-          )}
-          <button
-            type="button"
-            className="btn icon ghost icon-logout"
-            onClick={handleLogout}
-            aria-label="Log out"
-            data-tooltip="Log out"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                fill="#64748b"
-                d="M10 4.5H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25H10a.75.75 0 0 1 0 1.5H6.75A3.75 3.75 0 0 1 3 17.25V6.75A3.75 3.75 0 0 1 6.75 3H10a.75.75 0 0 1 0 1.5Z"
-              />
-              <path
-                fill="#e4572e"
-                d="M15.53 8.47a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1 0 1.06l-3 3a.75.75 0 1 1-1.06-1.06l1.72-1.72H10a.75.75 0 0 1 0-1.5h7.19l-1.66-1.72a.75.75 0 0 1 0-1.06Z"
-              />
-            </svg>
-          </button>
-        </nav>
+          </div>
+          <AppMenu
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            isAgent={isAgent}
+            view={view}
+            revealAdvanced={showAdvanced}
+            onRevealConsumed={() => setShowAdvanced(false)}
+            onNavigate={handleMenuNavigate}
+            onLogout={handleLogout}
+          />
         </div>
-        {isAgent && showAdvanced && (
-          <nav className="advanced-actions" aria-label="Advanced">
-            <button
-              type="button"
-              className={`btn icon ghost icon-agents${view === "agents" ? " is-active" : ""}`}
-              onClick={() => {
-                setRestoreAgentId(null);
-                setView("agents");
-              }}
-              aria-label="Agents"
-              aria-pressed={view === "agents"}
-              data-tooltip="Agents"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  fill="#0d9488"
-                  d="M4.5 10.5a7.5 7.5 0 0 1 15 0V12a2 2 0 0 1-2 2h-1.25a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 .75-.75H18a5.5 5.5 0 1 0-11 0h.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75H6.5A2 2 0 0 1 4.5 12v-1.5Z"
-                />
-                <path
-                  fill="#2563eb"
-                  d="M12 16.25a.75.75 0 0 1 .75.75v.5A2.75 2.75 0 0 1 10 20.25h-.5a.75.75 0 0 1 0-1.5H10a1.25 1.25 0 0 0 1.25-1.25v-.5a.75.75 0 0 1 .75-.75Z"
-                />
-                <circle cx="12" cy="12.25" r="1.35" fill="#115e59" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={`btn icon ghost icon-customers${view === "companies" ? " is-active" : ""}`}
-              onClick={() => {
-                setRestoreCustomers(null);
-                setView("companies");
-              }}
-              aria-label="Customers"
-              aria-pressed={view === "companies"}
-              data-tooltip="Customers"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  fill="#ea580c"
-                  d="M3.75 21a.75.75 0 0 1-.75-.75V9.68c0-.28.12-.54.34-.71l8-6.1a.75.75 0 0 1 .92 0l8 6.1c.22.17.34.43.34.71v10.57a.75.75 0 0 1-.75.75H14.5v-5.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0-.75.75V21H3.75Z"
-                />
-                <path
-                  fill="var(--icon-paper)"
-                  d="M8.25 10.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Zm-5.5 3.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Z"
-                />
-                <path fill="#c2410c" d="M10.25 21v-4.75h3.5V21h-3.5Z" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={`btn icon ghost icon-manufacturers${view === "manufacturers" ? " is-active" : ""}`}
-              onClick={() => setView("manufacturers")}
-              aria-label="Manufacturers"
-              aria-pressed={view === "manufacturers"}
-              data-tooltip="Manufacturers"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  fill="#4f46e5"
-                  d="M2.75 20.5V10.4l5.25 3.1V8.9l5.5 3.25V4.5h1.85v1.7h1.55V4.5h2.35v16H2.75Z"
-                />
-                <path
-                  fill="var(--icon-paper)"
-                  d="M5.4 15.35h2.1v2.35H5.4v-2.35Zm3.7 0h2.1v2.35H9.1v-2.35Zm3.7 0h2.1v2.35h-2.1v-2.35Z"
-                />
-                <path fill="#6366f1" d="M16.9 4.5h2.35v3.15H16.9V4.5Z" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={`btn icon ghost icon-asset-types${view === "assetTypes" ? " is-active" : ""}`}
-              onClick={() => setView("assetTypes")}
-              aria-label="Asset types"
-              aria-pressed={view === "assetTypes"}
-              data-tooltip="Asset types"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  fill="#0e7490"
-                  d="M12 3.4 3.6 8.05 12 12.7l8.4-4.65L12 3.4Z"
-                />
-                <path
-                  fill="#155e75"
-                  d="M3.6 11.15 12 15.8l8.4-4.65v1.85L12 17.7 3.6 13Z"
-                />
-                <path
-                  fill="var(--icon-paper)"
-                  d="M3.6 14.85 12 19.5l8.4-4.65v1.85L12 21.4 3.6 16.7Z"
-                />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={`btn icon ghost icon-log${view === "activityLog" ? " is-active" : ""}`}
-              onClick={() => openActivityLog()}
-              aria-label="Activity log"
-              aria-pressed={view === "activityLog"}
-              data-tooltip="Activity log"
-            >
-              <LogIcon />
-            </button>
-          </nav>
-        )}
       </header>
 
       <main className="main" ref={mainRef}>
@@ -2064,6 +1918,160 @@ function AddPlusButton({
   );
 }
 
+function NavSvg({ children }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      {children}
+    </svg>
+  );
+}
+
+function TicketsIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="#2563eb"
+        d="M4.5 5.25A1.75 1.75 0 0 1 6.25 3.5h11.5A1.75 1.75 0 0 1 19.5 5.25v13.5A1.75 1.75 0 0 1 17.75 20.5H6.25A1.75 1.75 0 0 1 4.5 18.75V5.25Z"
+      />
+      <path
+        fill="var(--icon-paper)"
+        d="M7.25 7h9.5a.75.75 0 0 1 0 1.5h-9.5a.75.75 0 0 1 0-1.5Zm0 3.25h9.5a.75.75 0 0 1 0 1.5h-9.5a.75.75 0 0 1 0-1.5Zm0 3.25h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5Z"
+      />
+      <path
+        fill="#1d4ed8"
+        d="M4.5 9.1c.9 0 1.65.75 1.65 1.65S5.4 12.4 4.5 12.4v-3.3Zm15 0V12.4c-.9 0-1.65-.75-1.65-1.65S18.6 9.1 19.5 9.1Z"
+      />
+    </NavSvg>
+  );
+}
+
+function StatsIcon() {
+  return (
+    <NavSvg>
+      <path fill="var(--icon-paper)" d="M3.5 19.5h17v1.75h-17V19.5Z" />
+      <path fill="#2563eb" d="M5.25 11.5h2.6V19.5h-2.6v-8Z" />
+      <path fill="#f59e0b" d="M10.7 8h2.6v11.5h-2.6V8Z" />
+      <path fill="#e4572e" d="M16.15 4.5h2.6V19.5h-2.6V4.5Z" />
+    </NavSvg>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="#4f46e5"
+        d="M7 3.4h1.6V5h6.8V3.4H17V5h1.6A1.9 1.9 0 0 1 20.5 6.9v12.2a1.9 1.9 0 0 1-1.9 1.9H5.4A1.9 1.9 0 0 1 3.5 19.1V6.9A1.9 1.9 0 0 1 5.4 5H7V3.4Z"
+      />
+      <path fill="var(--icon-paper)" d="M5.2 9.1h13.6v10.2H5.2V9.1Z" />
+      <path fill="#f59e0b" d="M6.4 10.4h5.3v4.15H6.4V10.4Z" />
+      <path fill="#2563eb" d="M12.3 10.4h5.3v4.15h-5.3V10.4Z" />
+    </NavSvg>
+  );
+}
+
+function AdvancedIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="#7c3aed"
+        d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96c-.5-.37-1.04-.68-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.26-1.13.57-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.8 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.92 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.13.24.43.34.7.22l2.39-.96c.5.37 1.04.68 1.63.94l.36 2.54c.05.24.26.42.49.42h3.8c.24 0 .45-.18.5-.42l.36-2.54c.59-.26 1.13-.57 1.63-.94l2.39.96c.27.11.56.02.7-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"
+      />
+      <circle cx="12" cy="12" r="2.05" fill="var(--icon-paper)" />
+    </NavSvg>
+  );
+}
+
+function LogoutIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="#64748b"
+        d="M10 4.5H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25H10a.75.75 0 0 1 0 1.5H6.75A3.75 3.75 0 0 1 3 17.25V6.75A3.75 3.75 0 0 1 6.75 3H10a.75.75 0 0 1 0 1.5Z"
+      />
+      <path
+        fill="#e4572e"
+        d="M15.53 8.47a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1 0 1.06l-3 3a.75.75 0 1 1-1.06-1.06l1.72-1.72H10a.75.75 0 0 1 0-1.5h7.19l-1.66-1.72a.75.75 0 0 1 0-1.06Z"
+      />
+    </NavSvg>
+  );
+}
+
+function AgentsIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="#0d9488"
+        d="M4.5 10.5a7.5 7.5 0 0 1 15 0V12a2 2 0 0 1-2 2h-1.25a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 .75-.75H18a5.5 5.5 0 1 0-11 0h.75a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75H6.5A2 2 0 0 1 4.5 12v-1.5Z"
+      />
+      <path
+        fill="#2563eb"
+        d="M12 16.25a.75.75 0 0 1 .75.75v.5A2.75 2.75 0 0 1 10 20.25h-.5a.75.75 0 0 1 0-1.5H10a1.25 1.25 0 0 0 1.25-1.25v-.5a.75.75 0 0 1 .75-.75Z"
+      />
+      <circle cx="12" cy="12.25" r="1.35" fill="#115e59" />
+    </NavSvg>
+  );
+}
+
+function CustomersIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="#ea580c"
+        d="M3.75 21a.75.75 0 0 1-.75-.75V9.68c0-.28.12-.54.34-.71l8-6.1a.75.75 0 0 1 .92 0l8 6.1c.22.17.34.43.34.71v10.57a.75.75 0 0 1-.75.75H14.5v-5.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0-.75.75V21H3.75Z"
+      />
+      <path
+        fill="var(--icon-paper)"
+        d="M8.25 10.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Zm-5.5 3.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Z"
+      />
+      <path fill="#c2410c" d="M10.25 21v-4.75h3.5V21h-3.5Z" />
+    </NavSvg>
+  );
+}
+
+function ManufacturersIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="#4f46e5"
+        d="M2.75 20.5V10.4l5.25 3.1V8.9l5.5 3.25V4.5h1.85v1.7h1.55V4.5h2.35v16H2.75Z"
+      />
+      <path
+        fill="var(--icon-paper)"
+        d="M5.4 15.35h2.1v2.35H5.4v-2.35Zm3.7 0h2.1v2.35H9.1v-2.35Zm3.7 0h2.1v2.35h-2.1v-2.35Z"
+      />
+      <path fill="#6366f1" d="M16.9 4.5h2.35v3.15H16.9V4.5Z" />
+    </NavSvg>
+  );
+}
+
+function AssetTypesIcon() {
+  return (
+    <NavSvg>
+      <path fill="#0e7490" d="M12 3.4 3.6 8.05 12 12.7l8.4-4.65L12 3.4Z" />
+      <path
+        fill="#155e75"
+        d="M3.6 11.15 12 15.8l8.4-4.65v1.85L12 17.7 3.6 13Z"
+      />
+      <path
+        fill="var(--icon-paper)"
+        d="M3.6 14.85 12 19.5l8.4-4.65v1.85L12 21.4 3.6 16.7Z"
+      />
+    </NavSvg>
+  );
+}
+
+function BurgerIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="currentColor"
+        d="M4.5 6.25h15a.75.75 0 0 1 0 1.5h-15a.75.75 0 0 1 0-1.5Zm0 5h15a.75.75 0 0 1 0 1.5h-15a.75.75 0 0 1 0-1.5Zm0 5h15a.75.75 0 0 1 0 1.5h-15a.75.75 0 0 1 0-1.5Z"
+      />
+    </NavSvg>
+  );
+}
+
 function LogIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -2079,6 +2087,204 @@ function LogIcon() {
         d="M10.4 7.1h8.1v2H10.4v-2Zm0 3.9h8.1v2H10.4v-2Zm0 3.9h6v2h-6v-2Z"
       />
     </svg>
+  );
+}
+
+function AppMenuItem({
+  iconClass,
+  icon,
+  label,
+  active = false,
+  submenu = false,
+  expanded = false,
+  onClick,
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      className={`app-menu-item${active ? " is-active" : ""}${
+        expanded ? " is-open" : ""
+      }${iconClass === "icon-logout" ? " is-logout" : ""}`}
+      aria-current={active && !submenu ? "page" : undefined}
+      aria-expanded={submenu ? expanded : undefined}
+      onClick={onClick}
+    >
+      <span
+        className={`app-menu-icon btn icon ghost ${iconClass}${
+          active ? " is-active" : ""
+        }`}
+      >
+        {icon}
+      </span>
+      <span className="app-menu-label">{label}</span>
+      {submenu ? (
+        <span className="app-menu-caret" aria-hidden="true">
+          {expanded ? "▾" : "▸"}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function AppMenu({
+  open,
+  onOpenChange,
+  isAgent,
+  view,
+  revealAdvanced,
+  onRevealConsumed,
+  onNavigate,
+  onLogout,
+}) {
+  const wrapRef = useRef(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const wasOpenRef = useRef(false);
+
+  if (open !== wasOpenRef.current) {
+    wasOpenRef.current = open;
+    if (open) {
+      setAdvancedOpen(Boolean(revealAdvanced) || ADVANCED_VIEWS.has(view));
+    }
+  }
+
+  useEffect(() => {
+    if (!open) return undefined;
+    if (revealAdvanced) onRevealConsumed?.();
+    return undefined;
+    // Consume the one-shot reveal flag only when the burger opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onDoc(event) {
+      if (wrapRef.current?.contains(event.target)) return;
+      onOpenChange(false);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") onOpenChange(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, onOpenChange]);
+
+  function go(next) {
+    onNavigate(next);
+    onOpenChange(false);
+  }
+
+  return (
+    <div className="app-menu" ref={wrapRef}>
+      <button
+        type="button"
+        className={`btn icon ghost icon-menu${open ? " is-open" : ""}`}
+        aria-label="Menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls="app-menu-panel"
+        onClick={() => onOpenChange(!open)}
+      >
+        <BurgerIcon />
+      </button>
+      {open ? (
+        <div
+          id="app-menu-panel"
+          className="app-menu-panel"
+          role="menu"
+          aria-label="App"
+        >
+          <AppMenuItem
+            iconClass="icon-tickets"
+            icon={<TicketsIcon />}
+            label="Tickets"
+            active={view === "list"}
+            onClick={() => go("list")}
+          />
+          <AppMenuItem
+            iconClass="icon-stats"
+            icon={<StatsIcon />}
+            label="Stats"
+            active={view === "stats"}
+            onClick={() => go("stats")}
+          />
+          {isAgent ? (
+            <AppMenuItem
+              iconClass="icon-calendar"
+              icon={<CalendarIcon />}
+              label="Calendar"
+              active={view === "calendar"}
+              onClick={() => go("calendar")}
+            />
+          ) : null}
+          {isAgent ? (
+            <>
+              <AppMenuItem
+                iconClass="icon-advanced"
+                icon={<AdvancedIcon />}
+                label="Advanced"
+                active={ADVANCED_VIEWS.has(view)}
+                submenu
+                expanded={advancedOpen}
+                onClick={() => setAdvancedOpen((current) => !current)}
+              />
+              {advancedOpen ? (
+                <div className="app-menu-sub" role="group" aria-label="Advanced">
+                  <AppMenuItem
+                    iconClass="icon-agents"
+                    icon={<AgentsIcon />}
+                    label="Agents"
+                    active={view === "agents"}
+                    onClick={() => go("agents")}
+                  />
+                  <AppMenuItem
+                    iconClass="icon-customers"
+                    icon={<CustomersIcon />}
+                    label="Customers"
+                    active={view === "companies"}
+                    onClick={() => go("companies")}
+                  />
+                  <AppMenuItem
+                    iconClass="icon-manufacturers"
+                    icon={<ManufacturersIcon />}
+                    label="Manufacturers"
+                    active={view === "manufacturers"}
+                    onClick={() => go("manufacturers")}
+                  />
+                  <AppMenuItem
+                    iconClass="icon-asset-types"
+                    icon={<AssetTypesIcon />}
+                    label="Asset types"
+                    active={view === "assetTypes"}
+                    onClick={() => go("assetTypes")}
+                  />
+                  <AppMenuItem
+                    iconClass="icon-log"
+                    icon={<LogIcon />}
+                    label="Activity log"
+                    active={view === "activityLog"}
+                    onClick={() => go("activityLog")}
+                  />
+                </div>
+              ) : null}
+            </>
+          ) : null}
+          <AppMenuItem
+            iconClass="icon-logout"
+            icon={<LogoutIcon />}
+            label="Log out"
+            onClick={() => {
+              onOpenChange(false);
+              onLogout();
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
