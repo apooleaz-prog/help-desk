@@ -13,6 +13,7 @@ function pageShell({ title, heading, muted, body }) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
     <title>${escapeHtml(title)}</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -24,14 +25,34 @@ function pageShell({ title, heading, muted, body }) {
     />
     <style>
       :root {
+        color-scheme: light;
         --bg: #e8eef2;
         --bg-accent: #d5e4ec;
         --surface: #f7fafc;
+        --raised: #ffffff;
         --ink: #152029;
         --muted: #5b6b78;
         --line: #c5d2dc;
         --brand: #0f6e6a;
+        --glow-teal: #c9e8e4;
+        --glow-peach: #f3d6c8;
         --shadow: 0 18px 40px rgba(21, 32, 41, 0.08);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --bg: #10171c;
+          --bg-accent: #0c1217;
+          --surface: #182028;
+          --raised: #1e2831;
+          --ink: #e8eef2;
+          --muted: #9aa8b3;
+          --line: #3a4a55;
+          --brand: #3cbab4;
+          --glow-teal: rgba(47, 140, 132, 0.22);
+          --glow-peach: rgba(196, 110, 72, 0.16);
+          --shadow: 0 18px 40px rgba(0, 0, 0, 0.42);
+        }
       }
       * { box-sizing: border-box; }
       html, body { height: 100%; margin: 0; }
@@ -39,8 +60,8 @@ function pageShell({ title, heading, muted, body }) {
         font-family: "DM Sans", system-ui, sans-serif;
         color: var(--ink);
         background:
-          radial-gradient(1200px 500px at 10% -10%, #c9e8e4 0%, transparent 55%),
-          radial-gradient(900px 420px at 100% 0%, #f3d6c8 0%, transparent 50%),
+          radial-gradient(1200px 500px at 10% -10%, var(--glow-teal) 0%, transparent 55%),
+          radial-gradient(900px 420px at 100% 0%, var(--glow-peach) 0%, transparent 50%),
           linear-gradient(180deg, var(--bg-accent), var(--bg));
       }
       .app {
@@ -52,7 +73,7 @@ function pageShell({ title, heading, muted, body }) {
       .panel {
         max-width: 720px;
         margin: 8vh auto 0;
-        background: color-mix(in srgb, var(--surface) 92%, white);
+        background: color-mix(in srgb, var(--surface) 92%, var(--raised));
         border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
         border-radius: 18px;
         box-shadow: var(--shadow);
@@ -60,6 +81,7 @@ function pageShell({ title, heading, muted, body }) {
       .panel-head { padding: 1.4rem 1.4rem 0.5rem; }
       .login-head { display: flex; align-items: center; gap: 0.75rem; }
       .login-logo { width: 4.9rem; height: 5.7rem; object-fit: contain; display: block; }
+      .login-head picture { display: block; flex-shrink: 0; line-height: 0; }
       .login-brand { margin: 0; font-weight: 700; letter-spacing: -0.03em; color: var(--brand); }
       h1 { margin: 0.1rem 0 0; font-size: 1.65rem; }
       .muted { margin: 0.35rem 0 0; color: var(--muted); }
@@ -76,7 +98,7 @@ function pageShell({ title, heading, muted, body }) {
       input {
         width: 100%;
         border: 1px solid var(--line);
-        background: white;
+        background: var(--raised);
         border-radius: 10px;
         padding: 0.6rem 0.75rem;
         font: inherit;
@@ -136,7 +158,10 @@ function pageShell({ title, heading, muted, body }) {
       <section class="panel">
         <div class="panel-head">
           <div class="login-head">
-            <img class="login-logo" src="/five-wits-logo.png?v=2" alt="Five Wits" />
+            <picture>
+              <source srcset="/five-wits-logo-dark.png?v=1" media="(prefers-color-scheme: dark)" />
+              <img class="login-logo" src="/five-wits-logo.png?v=2" alt="Five Wits" />
+            </picture>
             <div>
               <p class="login-brand">Help Desk</p>
               <h1>${escapeHtml(heading)}</h1>

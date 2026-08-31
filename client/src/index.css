@@ -1,7 +1,12 @@
 :root {
+  color-scheme: light;
   --bg: #e8eef2;
   --bg-accent: #d5e4ec;
   --surface: #f7fafc;
+  --raised: #ffffff;
+  --wash: #e8eef2;
+  --hover: color-mix(in srgb, var(--ink) 5%, var(--raised));
+  --danger-wash: #fff1f2;
   --ink: #152029;
   --muted: #5b6b78;
   --line: #c5d2dc;
@@ -16,6 +21,10 @@
   --high: #e4572e;
   --medium: #b45309;
   --low: #4b6678;
+  --tooltip-bg: #152029;
+  --tooltip-ink: #f4f8fb;
+  --glow-teal: #c9e8e4;
+  --glow-peach: #f3d6c8;
   --shadow: 0 18px 40px rgba(21, 32, 41, 0.08);
   --radius: 14px;
   font-family: "DM Sans", system-ui, sans-serif;
@@ -23,12 +32,43 @@
   font-weight: 400;
   color: var(--ink);
   background:
-    radial-gradient(1200px 500px at 10% -10%, #c9e8e4 0%, transparent 55%),
-    radial-gradient(900px 420px at 100% 0%, #f3d6c8 0%, transparent 50%),
+    radial-gradient(1200px 500px at 10% -10%, var(--glow-teal) 0%, transparent 55%),
+    radial-gradient(900px 420px at 100% 0%, var(--glow-peach) 0%, transparent 50%),
     linear-gradient(180deg, var(--bg-accent), var(--bg));
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #10171c;
+    --bg-accent: #0c1217;
+    --surface: #182028;
+    --raised: #1e2831;
+    --wash: #24313b;
+    --danger-wash: #3a1d24;
+    --ink: #e8eef2;
+    --muted: #9aa8b3;
+    --line: #3a4a55;
+    --brand: #3cbab4;
+    --brand-ink: #9ee8e3;
+    --accent: #f08968;
+    --open: #60a5fa;
+    --progress: #fbbf24;
+    --on-hold: #2dd4bf;
+    --closed: #94a3b8;
+    --urgent: #fb7185;
+    --high: #fb923c;
+    --medium: #fbbf24;
+    --low: #94a3b8;
+    --tooltip-bg: #e8eef2;
+    --tooltip-ink: #152029;
+    --glow-teal: rgba(47, 140, 132, 0.22);
+    --glow-peach: rgba(196, 110, 72, 0.16);
+    --shadow: 0 18px 40px rgba(0, 0, 0, 0.42);
+  }
 }
 
 * {

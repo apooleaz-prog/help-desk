@@ -273,6 +273,22 @@ function assetSearchText(asset) {
     .toLowerCase();
 }
 
+function FiveWitsLogo({ className }) {
+  return (
+    <picture>
+      <source
+        srcSet="/five-wits-logo-dark.png?v=1"
+        media="(prefers-color-scheme: dark)"
+      />
+      <img
+        className={className}
+        src="/five-wits-logo.png?v=2"
+        alt="Five Wits"
+      />
+    </picture>
+  );
+}
+
 function CommentAssetCard({ asset }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   if (!asset) return null;
@@ -1554,11 +1570,7 @@ function App() {
               setSelected(null);
             }}
           >
-            <img
-              className="brand-logo"
-              src="/five-wits-logo.png?v=2"
-              alt="Five Wits"
-            />
+            <FiveWitsLogo className="brand-logo" />
             <span className="brand-copy">
               <span className="brand-name">Help Desk</span>
               <span
@@ -1595,7 +1607,7 @@ function App() {
                 d="M4.5 5.25A1.75 1.75 0 0 1 6.25 3.5h11.5A1.75 1.75 0 0 1 19.5 5.25v13.5A1.75 1.75 0 0 1 17.75 20.5H6.25A1.75 1.75 0 0 1 4.5 18.75V5.25Z"
               />
               <path
-                fill="#dbeafe"
+                fill="var(--icon-paper)"
                 d="M7.25 7h9.5a.75.75 0 0 1 0 1.5h-9.5a.75.75 0 0 1 0-1.5Zm0 3.25h9.5a.75.75 0 0 1 0 1.5h-9.5a.75.75 0 0 1 0-1.5Zm0 3.25h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5Z"
               />
               <path
@@ -1617,7 +1629,7 @@ function App() {
             data-tooltip="Stats"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path fill="#dbeafe" d="M3.5 19.5h17v1.75h-17V19.5Z" />
+              <path fill="var(--icon-paper)" d="M3.5 19.5h17v1.75h-17V19.5Z" />
               <path fill="#2563eb" d="M5.25 11.5h2.6V19.5h-2.6v-8Z" />
               <path fill="#f59e0b" d="M10.7 8h2.6v11.5h-2.6V8Z" />
               <path fill="#e4572e" d="M16.15 4.5h2.6V19.5h-2.6V4.5Z" />
@@ -1641,7 +1653,7 @@ function App() {
                   fill="#4f46e5"
                   d="M7 3.4h1.6V5h6.8V3.4H17V5h1.6A1.9 1.9 0 0 1 20.5 6.9v12.2a1.9 1.9 0 0 1-1.9 1.9H5.4A1.9 1.9 0 0 1 3.5 19.1V6.9A1.9 1.9 0 0 1 5.4 5H7V3.4Z"
                 />
-                <path fill="#eef2ff" d="M5.2 9.1h13.6v10.2H5.2V9.1Z" />
+                <path fill="var(--icon-paper)" d="M5.2 9.1h13.6v10.2H5.2V9.1Z" />
                 <path fill="#f59e0b" d="M6.4 10.4h5.3v4.15H6.4V10.4Z" />
                 <path fill="#2563eb" d="M12.3 10.4h5.3v4.15h-5.3V10.4Z" />
               </svg>
@@ -1661,7 +1673,7 @@ function App() {
                   fill="#7c3aed"
                   d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96c-.5-.37-1.04-.68-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.26-1.13.57-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.8 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.92 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.13.24.43.34.7.22l2.39-.96c.5.37 1.04.68 1.63.94l.36 2.54c.05.24.26.42.49.42h3.8c.24 0 .45-.18.5-.42l.36-2.54c.59-.26 1.13-.57 1.63-.94l2.39.96c.27.11.56.02.7-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"
                 />
-                <circle cx="12" cy="12" r="2.05" fill="#ede9fe" />
+                <circle cx="12" cy="12" r="2.05" fill="var(--icon-paper)" />
               </svg>
             </button>
           )}
@@ -1727,7 +1739,7 @@ function App() {
                   d="M3.75 21a.75.75 0 0 1-.75-.75V9.68c0-.28.12-.54.34-.71l8-6.1a.75.75 0 0 1 .92 0l8 6.1c.22.17.34.43.34.71v10.57a.75.75 0 0 1-.75.75H14.5v-5.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0-.75.75V21H3.75Z"
                 />
                 <path
-                  fill="#ffedd5"
+                  fill="var(--icon-paper)"
                   d="M8.25 10.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Zm-5.5 3.5h2v2h-2v-2Zm5.5 0h2v2h-2v-2Z"
                 />
                 <path fill="#c2410c" d="M10.25 21v-4.75h3.5V21h-3.5Z" />
@@ -1747,7 +1759,7 @@ function App() {
                   d="M2.75 20.5V10.4l5.25 3.1V8.9l5.5 3.25V4.5h1.85v1.7h1.55V4.5h2.35v16H2.75Z"
                 />
                 <path
-                  fill="#c7d2fe"
+                  fill="var(--icon-paper)"
                   d="M5.4 15.35h2.1v2.35H5.4v-2.35Zm3.7 0h2.1v2.35H9.1v-2.35Zm3.7 0h2.1v2.35h-2.1v-2.35Z"
                 />
                 <path fill="#6366f1" d="M16.9 4.5h2.35v3.15H16.9V4.5Z" />
@@ -1771,7 +1783,7 @@ function App() {
                   d="M3.6 11.15 12 15.8l8.4-4.65v1.85L12 17.7 3.6 13Z"
                 />
                 <path
-                  fill="#67e8f9"
+                  fill="var(--icon-paper)"
                   d="M3.6 14.85 12 19.5l8.4-4.65v1.85L12 21.4 3.6 16.7Z"
                 />
               </svg>
@@ -2063,7 +2075,7 @@ function LogIcon() {
       <circle cx="7.6" cy="12" r="1.45" fill="#f59e0b" />
       <circle cx="7.6" cy="15.9" r="1.45" fill="#f59e0b" />
       <path
-        fill="#ffffff"
+        fill="var(--icon-paper)"
         d="M10.4 7.1h8.1v2H10.4v-2Zm0 3.9h8.1v2H10.4v-2Zm0 3.9h6v2h-6v-2Z"
       />
     </svg>
@@ -2524,6 +2536,132 @@ function AgentColorPicker({ value, onChange, disabled }) {
   );
 }
 
+function knockNearWhitePixels(imageData) {
+  const { data, width, height } = imageData;
+  const total = width * height;
+  const isBackdrop = new Uint8Array(total);
+
+  function sample(i) {
+    const o = i * 4;
+    return [data[o], data[o + 1], data[o + 2], data[o + 3]];
+  }
+
+  function looksLikeBackdrop(r, g, b, a) {
+    if (a < 12) return true;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const sat = max === 0 ? 0 : (max - min) / max;
+    return sat < 0.32 && lum > 0.55;
+  }
+
+  const queue = [];
+  function enqueue(x, y) {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const i = y * width + x;
+    if (isBackdrop[i]) return;
+    const [r, g, b, a] = sample(i);
+    if (!looksLikeBackdrop(r, g, b, a)) return;
+    isBackdrop[i] = 1;
+    queue.push(i);
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, 0);
+    enqueue(x, height - 1);
+  }
+  for (let y = 0; y < height; y += 1) {
+    enqueue(0, y);
+    enqueue(width - 1, y);
+  }
+
+  while (queue.length) {
+    const i = queue.pop();
+    const x = i % width;
+    const y = (i - x) / width;
+    enqueue(x - 1, y);
+    enqueue(x + 1, y);
+    enqueue(x, y - 1);
+    enqueue(x, y + 1);
+  }
+
+  let opaqueLum = 0;
+  let opaqueCount = 0;
+  let knocked = 0;
+  const colorBuckets = new Set();
+  for (let i = 0; i < total; i += 1) {
+    const o = i * 4;
+    if (isBackdrop[i] && data[o + 3] >= 12) {
+      data[o + 3] = 0;
+      knocked += 1;
+      continue;
+    }
+    if (data[o + 3] < 12) continue;
+    const r = data[o];
+    const g = data[o + 1];
+    const b = data[o + 2];
+    const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    opaqueLum += lum;
+    opaqueCount += 1;
+    colorBuckets.add(`${r >> 4}-${g >> 4}-${b >> 4}`);
+  }
+
+  const avgLum = opaqueCount > 0 ? opaqueLum / opaqueCount : 1;
+  const emptyPct = (total - opaqueCount) / total;
+  const invertOnDark =
+    emptyPct > 0.5 && avgLum < 0.55 && colorBuckets.size < 140 && opaqueCount > 24;
+
+  return {
+    changed: knocked > 40,
+    invertOnDark,
+    empty: opaqueCount < 24,
+  };
+}
+
+const logoImageCache = new Map();
+const LOGO_PREP_VERSION = 4;
+
+function prepareLogoImage(src) {
+  const key = `${LOGO_PREP_VERSION}:${src}`;
+  const cached = logoImageCache.get(key);
+  if (cached) return cached;
+  const work = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const width = img.naturalWidth || img.width;
+        const height = img.naturalHeight || img.height;
+        if (!width || !height) {
+          resolve(null);
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const result = knockNearWhitePixels(imageData);
+        if (result.empty) {
+          resolve({ src, invertOnDark: false });
+          return;
+        }
+        if (result.changed) ctx.putImageData(imageData, 0, 0);
+        resolve({
+          src: result.changed ? canvas.toDataURL("image/png") : src,
+          invertOnDark: result.invertOnDark,
+        });
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+  logoImageCache.set(key, work);
+  return work;
+}
+
 function PersonAvatar({ name = "", image, size = "md", variant = "person" }) {
   const initials = name
     .split(/\s+/)
@@ -2531,12 +2669,41 @@ function PersonAvatar({ name = "", image, size = "md", variant = "person" }) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("");
+  const isLogo = variant !== "person";
+  const [logoSrc, setLogoSrc] = useState(image || "");
+  const [logoOnDark, setLogoOnDark] = useState(false);
+
+  useEffect(() => {
+    if (!image || !isLogo) {
+      setLogoSrc(image || "");
+      setLogoOnDark(false);
+      return undefined;
+    }
+    let cancelled = false;
+    prepareLogoImage(image).then((result) => {
+      if (cancelled) return;
+      setLogoSrc(result?.src || image);
+      setLogoOnDark(Boolean(result?.invertOnDark));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [image, isLogo, LOGO_PREP_VERSION]);
+
   return (
     <span
       className={`person-avatar size-${size} variant-${variant}`}
       aria-hidden="true"
     >
-      {image ? <img src={image} alt="" /> : <span>{initials || "?"}</span>}
+      {image ? (
+        <img
+          src={isLogo ? logoSrc || image : image}
+          alt=""
+          className={logoOnDark ? "logo-on-dark" : undefined}
+        />
+      ) : (
+        <span>{initials || "?"}</span>
+      )}
     </span>
   );
 }
@@ -2602,7 +2769,7 @@ function CompanyRef({ company, size = "sm", className = "" }) {
   );
 }
 
-async function readImageAsDataUrl(file, mimeHint = "") {
+async function readImageAsDataUrl(file, mimeHint = "", { knockWhite = false } = {}) {
   if (!file) {
     throw new Error("Choose a jpeg, png, gif, or webp image");
   }
@@ -2624,7 +2791,12 @@ async function readImageAsDataUrl(file, mimeHint = "") {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
-  const mime = type === "image/png" ? "image/png" : "image/jpeg";
+  if (knockWhite) {
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const result = knockNearWhitePixels(imageData);
+    if (!result.empty) ctx.putImageData(imageData, 0, 0);
+  }
+  const mime = knockWhite || type === "image/png" ? "image/png" : "image/jpeg";
   const dataUrl = canvas.toDataURL(mime, 0.85);
   if (dataUrl.length > 1_800_000) {
     throw new Error("Image is too large after resize. Try a smaller file.");
@@ -2652,7 +2824,9 @@ function ImageImportButton({
     if (!file) return;
     setBusy(true);
     try {
-      const dataUrl = await readImageAsDataUrl(file);
+      const dataUrl = await readImageAsDataUrl(file, file.type, {
+        knockWhite: variant !== "person",
+      });
       skipRef.current = 0;
       onChange(dataUrl);
     } catch (err) {
@@ -2678,7 +2852,9 @@ function ImageImportButton({
         const blob = await res.blob();
         const type = blob.type || "image/jpeg";
         const file = new File([blob], "stock", { type });
-        onChange(await readImageAsDataUrl(file, type));
+        onChange(await readImageAsDataUrl(file, type, {
+          knockWhite: variant !== "person",
+        }));
       } catch (err) {
         window.alert(err.message || "Could not find a stock image");
       } finally {
@@ -3090,11 +3266,7 @@ function LoginView({ saving, error, notice, prefillEmail, onLogin }) {
       <div className="panel-head">
         <div>
           <div className="login-head">
-            <img
-              className="login-logo"
-              src="/five-wits-logo.png?v=2"
-              alt="Five Wits"
-            />
+            <FiveWitsLogo className="login-logo" />
             <div className="login-head-copy">
               <p className="login-brand">Help Desk</p>
               <h1>
@@ -3314,11 +3486,7 @@ function ResetPasswordView({ token, onBackToLogin }) {
       <div className="panel-head">
         <div>
           <div className="login-head">
-            <img
-              className="login-logo"
-              src="/five-wits-logo.png?v=2"
-              alt="Five Wits"
-            />
+            <FiveWitsLogo className="login-logo" />
             <div className="login-head-copy">
               <p className="login-brand">Help Desk</p>
               <h1>Reset password</h1>
