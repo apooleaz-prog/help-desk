@@ -1,15 +1,27 @@
 const API = `${import.meta.env.VITE_API_URL || ""}/api`;
-const TOKEN_KEY = "deskline_token";
+export const TOKEN_KEY = "deskline_token";
+
+function migrateLocalStorageToken() {
+  const leftover = localStorage.getItem(TOKEN_KEY);
+  if (!leftover) return null;
+  sessionStorage.setItem(TOKEN_KEY, leftover);
+  localStorage.removeItem(TOKEN_KEY);
+  return leftover;
+}
 
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  const sessionToken = sessionStorage.getItem(TOKEN_KEY);
+  if (sessionToken) return sessionToken;
+  return migrateLocalStorageToken();
 }
 
 export function setToken(token) {
-  localStorage.setItem(TOKEN_KEY, token);
+  sessionStorage.setItem(TOKEN_KEY, token);
+  localStorage.removeItem(TOKEN_KEY);
 }
 
 export function clearToken() {
+  sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(TOKEN_KEY);
 }
 
@@ -342,6 +354,14 @@ export function fetchActivityLogUsers() {
 
 export function clearActivityLogs() {
   return request("/activity-log", { method: "DELETE" });
+}
+
+export function fetchAlerts() {
+  return request("/alerts");
+}
+
+export function dismissAlert(id) {
+  return request(`/alerts/${id}/dismiss`, { method: "POST" });
 }
 
 export function fetchCalendarSlots(from, to) {

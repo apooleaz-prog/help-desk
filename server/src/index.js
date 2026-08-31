@@ -79,6 +79,10 @@ import {
   listActivityLogs,
   listActivityLogActors,
   clearActivityLog,
+  insertAlert,
+  listOpenAlerts,
+  dismissAlert,
+  removeAlertsForTicket,
   isDateKey,
   listCalendarSlots,
   upsertCalendarSlot,
@@ -173,11 +177,11 @@ function labelTicketPriority(priority) {
   return PRIORITY_LABELS[priority] || String(priority);
 }
 
-function fieldChangeComment(agent, kind, body, customerVisible = false) {
+function fieldChangeComment(actor, kind, body, customerVisible = false) {
   return {
     id: uuidv4(),
-    author: agent.name,
-    agentId: agent.id,
+    author: actor.name,
+    ...(actor.color ? { agentId: actor.id } : {}),
     kind,
     body,
     customerVisible,
@@ -229,6 +233,23 @@ async function recordActivity(source, fields) {
     });
   } catch (err) {
     console.error("Failed to record activity:", err);
+  }
+}
+
+async function recordAlert(source, fields) {
+  try {
+    const actor = actorFrom(source);
+    await insertAlert({
+      ...actor,
+      kind: fields.kind,
+      message: fields.message,
+      ticketId: fields.ticketId,
+      ticketTitle: fields.ticketTitle || "",
+      commentId: fields.commentId || "",
+      companyId: fields.companyId || "",
+    });
+  } catch (err) {
+    console.error("Failed to record alert:", err);
   }
 }
 
@@ -941,6 +962,20 @@ app.get("/api/activity-log", requireAgent, async (req, res) => {
 app.delete("/api/activity-log", requireAgent, async (_req, res) => {
   await clearActivityLog();
   res.json({ ok: true });
+});
+
+app.get("/api/alerts", requireAgent, async (_req, res) => {
+  const alerts = await listOpenAlerts();
+  res.json({ alerts });
+});
+
+app.post("/api/alerts/:id/dismiss", requireAgent, async (req, res) => {
+  const alert = await dismissAlert(req.params.id, req.agent.id);
+  if (!alert) {
+    return res.status(404).json({ error: "Alert not found" });
+  }
+  const alerts = await listOpenAlerts();
+  res.json({ alert, alerts });
 });
 
 app.post("/api/manufacturers", requireAgent, async (req, res) => {
@@ -1900,15 +1935,23 @@ app.post("/api/tickets", async (req, res) => {
   let { companyId, personId } = req.body ?? {};
 
   if (req.role === "person") {
-    companyId = req.person.companyId;
+    companyId = req.person.companyId || req.person.company?.id;
     personId = req.person.id;
   } else if (req.role !== "agent") {
     return res.status(403).json({ error: "Agent access required" });
   }
 
-  if (!title?.trim() || !description?.trim() || !companyId || !personId) {
+  const titleText = typeof title === "string" ? title.trim() : "";
+  const descriptionText =
+    typeof description === "string" ? description.trim() : "";
+  const missing = [];
+  if (!titleText) missing.push("title");
+  if (!descriptionText) missing.push("description");
+  if (!companyId) missing.push("company");
+  if (!personId) missing.push("contact person");
+  if (missing.length) {
     return res.status(400).json({
-      error: "title, description, companyId, and personId are required",
+      error: `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required`,
     });
   }
 
@@ -1938,8 +1981,8 @@ app.post("/api/tickets", async (req, res) => {
   const now = new Date().toISOString();
   const ticket = {
     id: uuidv4(),
-    title: title.trim(),
-    description: description.trim(),
+    title: titleText,
+    description: descriptionText,
     companyId: company.id,
     personId: person.id,
     ...(req.role === "agent" ? { creatorAgentId: req.agent.id } : {}),
@@ -1959,11 +2002,24 @@ app.post("/api/tickets", async (req, res) => {
     resourceId: ticket.id,
     resourceName: ticket.title,
   });
+  if (req.role === "person" && ticket.priority === "urgent") {
+    await recordAlert(req, {
+      kind: "urgent",
+      message: `${req.person.name} opened an urgent ticket`,
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      companyId: ticket.companyId,
+    });
+  }
 
   res.status(201).json(enrichTicket(db, ticket, req.role));
 });
 
-app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
+app.patch("/api/tickets/:id", async (req, res) => {
+  if (req.role !== "agent" && req.role !== "person") {
+    return res.status(403).json({ error: "Agent access required" });
+  }
+
   const db = await readDb();
   const index = db.tickets.findIndex((t) => t.id === req.params.id);
   if (index === -1) {
@@ -1972,7 +2028,18 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
 
   const { status, priority, companyId, personId } = req.body ?? {};
   const ticket = db.tickets[index];
+
+  if (req.role === "person") {
+    if (!ticketVisibleToPerson(ticket, req, db)) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    if (status !== undefined || companyId !== undefined || personId !== undefined) {
+      return res.status(403).json({ error: "Agent access required" });
+    }
+  }
+
   const changeComments = [];
+  const previousPriority = ticket.priority;
 
   if (status !== undefined) {
     if (!STATUSES.includes(status)) {
@@ -2006,9 +2073,10 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
         .json({ error: `priority must be one of: ${PRIORITIES.join(", ")}` });
     }
     if (priority !== ticket.priority) {
+      const actor = req.role === "agent" ? req.agent : req.person;
       changeComments.push(
         fieldChangeComment(
-          req.agent,
+          actor,
           "priority",
           `Changed the priority from ${labelTicketPriority(ticket.priority)} to ${labelTicketPriority(priority)}`,
           true
@@ -2044,6 +2112,19 @@ app.patch("/api/tickets/:id", requireAgent, async (req, res) => {
   }
   db.tickets[index] = ticket;
   await writeDb(db);
+  if (
+    req.role === "person" &&
+    previousPriority !== "urgent" &&
+    ticket.priority === "urgent"
+  ) {
+    await recordAlert(req, {
+      kind: "urgent",
+      message: `${req.person.name} marked a ticket as urgent`,
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      companyId: ticket.companyId,
+    });
+  }
 
   res.json(enrichTicket(db, ticket, req.role));
 });
@@ -2057,6 +2138,7 @@ app.delete("/api/tickets/:id", requireAgent, async (req, res) => {
 
   const [removed] = db.tickets.splice(index, 1);
   await writeDb(db);
+  await removeAlertsForTicket(removed.id);
   await recordActivity(req, {
     action: "delete",
     resourceType: "ticket",
@@ -2150,6 +2232,16 @@ app.post("/api/tickets/:id/comments", async (req, res) => {
     db.tickets[index].status = "closed";
   }
   await writeDb(db);
+  if (req.role === "person" && normalizedKind === "callback") {
+    await recordAlert(req, {
+      kind: "callback",
+      message: `${req.person.name} requested a call back`,
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      commentId: comment.id,
+      companyId: ticket.companyId,
+    });
+  }
 
   res.status(201).json({
     comment,

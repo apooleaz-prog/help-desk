@@ -25,6 +25,8 @@ import {
   fetchActivityLogs,
   fetchActivityLogUsers,
   clearActivityLogs,
+  fetchAlerts,
+  dismissAlert,
   fetchCalendarSlots,
   updateCalendarSlot,
   fetchCompanies,
@@ -67,7 +69,7 @@ const CUSTOMER_STATUS_FILTERS = STATUS_FILTERS.filter(
   (status) => status.value === "open" || status.value === "closed"
 );
 const CUSTOMER_OPEN_STATUSES = ["open", "in_progress", "on_hold"];
-const DEFAULT_TICKET_STATUSES = ["open", "in_progress"];
+const DEFAULT_TICKET_STATUSES = ["open", "in_progress", "on_hold"];
 const CUSTOMER_DEFAULT_TICKET_STATUSES = ["open"];
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const PRIORITY_FILTERS = [
@@ -754,6 +756,8 @@ function App() {
   const [assetTypes, setAssetTypes] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [alerts, setAlerts] = useState([]);
   const [activityLogUserId, setActivityLogUserId] = useState("");
   const [activityLogReturn, setActivityLogReturn] = useState(null);
   const [restoreAgentId, setRestoreAgentId] = useState(null);
@@ -884,6 +888,8 @@ function App() {
     setSelected(null);
     setShowAdvanced(false);
     setMenuOpen(false);
+    setAlertsOpen(false);
+    setAlerts([]);
     setTickets([]);
     setOpenByPriority(emptyPriorityCounts());
     setTicketsByPriority(emptyPriorityCounts());
@@ -964,6 +970,41 @@ function App() {
     setAssetTypes(data);
     return data;
   }, []);
+
+  const loadAlerts = useCallback(async () => {
+    if (role !== "agent") {
+      setAlerts([]);
+      return [];
+    }
+    const data = await fetchAlerts();
+    const rows = Array.isArray(data?.alerts) ? data.alerts : [];
+    setAlerts(rows);
+    return rows;
+  }, [role]);
+
+  useEffect(() => {
+    if (!isAgent) return undefined;
+    loadAlerts().catch((err) => {
+      if (!handleAuthFailure(err)) setError(err.message);
+    });
+    const timer = window.setInterval(() => {
+      loadAlerts().catch((err) => {
+        handleAuthFailure(err);
+      });
+    }, 20000);
+    function onFocus() {
+      loadAlerts().catch((err) => {
+        handleAuthFailure(err);
+      });
+    }
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [isAgent, loadAlerts]);
 
   useEffect(() => {
     if (!isAgent) return;
@@ -1106,6 +1147,8 @@ function App() {
       setView("list");
       setShowAdvanced(false);
       setMenuOpen(false);
+      setAlertsOpen(false);
+      setAlerts([]);
       setCompanyFilter("");
       setPriorityFilter([]);
       setQuery("");
@@ -1171,6 +1214,21 @@ function App() {
       setView("detail");
     } catch (err) {
       if (!handleAuthFailure(err)) setError(err.message);
+    }
+  }
+
+  async function handleAlertSelect(alert) {
+    setAlertsOpen(false);
+    setAlerts((current) => current.filter((row) => row.id !== alert.id));
+    try {
+      const data = await dismissAlert(alert.id);
+      if (Array.isArray(data?.alerts)) setAlerts(data.alerts);
+    } catch (err) {
+      if (handleAuthFailure(err)) return;
+      loadAlerts().catch(() => {});
+    }
+    if (alert.ticketId) {
+      await openTicket(alert.ticketId);
     }
   }
 
@@ -1618,12 +1676,13 @@ function App() {
             <button
               type="button"
               className="brand"
-              onClick={() => {
-                setMenuOpen(false);
-                setShowAdvanced(false);
-                setView("list");
-                setSelected(null);
-              }}
+            onClick={() => {
+              setMenuOpen(false);
+              setAlertsOpen(false);
+              setShowAdvanced(false);
+              setView("list");
+              setSelected(null);
+            }}
             >
               <FiveWitsLogo className="brand-logo" />
               <span className="brand-copy">
@@ -1643,16 +1702,37 @@ function App() {
               </span>
             </button>
           </div>
-          <AppMenu
-            open={menuOpen}
-            onOpenChange={setMenuOpen}
-            isAgent={isAgent}
-            view={view}
-            revealAdvanced={showAdvanced}
-            onRevealConsumed={() => setShowAdvanced(false)}
-            onNavigate={handleMenuNavigate}
-            onLogout={handleLogout}
-          />
+          <div className="topbar-tools">
+            {isAgent ? (
+              <AlertMenu
+                open={alertsOpen}
+                onOpenChange={(next) => {
+                  setAlertsOpen(next);
+                  if (next) {
+                    setMenuOpen(false);
+                    loadAlerts().catch((err) => {
+                      if (!handleAuthFailure(err)) setError(err.message);
+                    });
+                  }
+                }}
+                alerts={alerts}
+                onSelect={handleAlertSelect}
+              />
+            ) : null}
+            <AppMenu
+              open={menuOpen}
+              onOpenChange={(next) => {
+                setMenuOpen(next);
+                if (next) setAlertsOpen(false);
+              }}
+              isAgent={isAgent}
+              view={view}
+              revealAdvanced={showAdvanced}
+              onRevealConsumed={() => setShowAdvanced(false)}
+              onNavigate={handleMenuNavigate}
+              onLogout={handleLogout}
+            />
+          </div>
         </div>
       </header>
 
@@ -1883,6 +1963,7 @@ function App() {
             agentName={displayUser.name}
             saving={saving}
             readOnly={isPerson}
+            allowPriorityEdit={isPerson}
             onBack={backToTickets}
             onStatusChange={handleStatusChange}
             onPriorityChange={handlePriorityChange}
@@ -2282,6 +2363,117 @@ function AppMenu({
               onLogout();
             }}
           />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <NavSvg>
+      <path
+        fill="currentColor"
+        d="M12 3.4A6.6 6.6 0 0 1 18.6 10v4.15l1.55 2.1a.9.9 0 0 1-.72 1.45H4.57a.9.9 0 0 1-.72-1.45L5.4 14.15V10A6.6 6.6 0 0 1 12 3.4Zm0 17.1a2.35 2.35 0 0 0 2.3-1.85h-4.6A2.35 2.35 0 0 0 12 20.5Z"
+      />
+    </NavSvg>
+  );
+}
+
+function formatAlertTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function alertKindLabel(kind) {
+  if (kind === "callback") return "Call back";
+  if (kind === "urgent") return "Urgent";
+  return "Alert";
+}
+
+function AlertMenu({ open, onOpenChange, alerts, onSelect }) {
+  const wrapRef = useRef(null);
+  const count = alerts.length;
+  const empty = count === 0;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onDoc(event) {
+      if (wrapRef.current?.contains(event.target)) return;
+      onOpenChange(false);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") onOpenChange(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, onOpenChange]);
+
+  const badge = count > 99 ? "99+" : String(count);
+
+  return (
+    <div className="alert-menu" ref={wrapRef}>
+      <button
+        type="button"
+        className={`btn icon ghost icon-alerts${open ? " is-open" : ""}${
+          empty ? " is-empty" : ""
+        }`}
+        aria-label={empty ? "Alerts, none" : `Alerts, ${count}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls="alert-menu-panel"
+        onClick={() => onOpenChange(!open)}
+      >
+        <AlertIcon />
+        {empty ? null : (
+          <span className="alert-badge" aria-hidden="true">
+            {badge}
+          </span>
+        )}
+      </button>
+      {open ? (
+        <div
+          id="alert-menu-panel"
+          className="alert-menu-panel"
+          role="menu"
+          aria-label="Alerts"
+        >
+          {empty ? (
+            <p className="alert-menu-empty">No alerts</p>
+          ) : (
+            alerts.map((alert) => (
+              <button
+                key={alert.id}
+                type="button"
+                role="menuitem"
+                className="alert-menu-item"
+                onClick={() => onSelect(alert)}
+              >
+                <span className={`alert-kind ${alert.kind}`}>
+                  {alertKindLabel(alert.kind)}
+                </span>
+                <span className="alert-menu-copy">
+                  <span className="alert-menu-title">{alert.message}</span>
+                  {alert.ticketTitle ? (
+                    <span className="alert-menu-ticket">{alert.ticketTitle}</span>
+                  ) : null}
+                  <span className="alert-menu-time">
+                    {formatAlertTime(alert.createdAt)}
+                  </span>
+                </span>
+              </button>
+            ))
+          )}
         </div>
       ) : null}
     </div>
@@ -7517,14 +7709,22 @@ function NewTicketForm({
 
   useEffect(() => {
     if (portalMode) return;
-    if (!form.companyId && companies[0]) {
-      setForm((prev) => ({
-        ...prev,
-        companyId: companies[0].id,
-        personId: companies[0].people[0]?.id ?? "",
-      }));
-    }
-  }, [companies, form.companyId, portalMode]);
+    setForm((prev) => {
+      if (!prev.companyId && companies[0]) {
+        return {
+          ...prev,
+          companyId: companies[0].id,
+          personId: companies[0].people[0]?.id ?? "",
+        };
+      }
+      if (prev.companyId && !prev.personId) {
+        const company = companies.find((c) => c.id === prev.companyId);
+        const nextPersonId = company?.people[0]?.id ?? "";
+        if (nextPersonId) return { ...prev, personId: nextPersonId };
+      }
+      return prev;
+    });
+  }, [companies, portalMode]);
 
   function update(field, value) {
     setForm((prev) => {
@@ -7542,23 +7742,44 @@ function NewTicketForm({
 
   function handleSubmit(e) {
     e.preventDefault();
-    if (notesIsEmpty(form.description)) {
+    const formEl = e.currentTarget;
+    const title = String(
+      formEl.querySelector('input[name="title"]')?.value || form.title || ""
+    ).trim();
+    const editor = formEl.querySelector(".notes-editor");
+    const liveDescription = editor ? notesHtmlToMarkdown(editor) : "";
+    const description = liveDescription || form.description;
+    const companyId = String(
+      formEl.querySelector('select[name="companyId"]')?.value ||
+        form.companyId ||
+        ""
+    );
+    const personId = String(
+      formEl.querySelector('select[name="personId"]')?.value || form.personId || ""
+    );
+    if (!title) {
+      window.alert("Add a title before creating the ticket.");
+      return;
+    }
+    if (notesIsEmpty(description)) {
       window.alert("Add a description before creating the ticket.");
       return;
     }
     if (portalMode) {
       onSubmit({
-        title: form.title,
-        description: form.description,
+        title,
+        description,
         priority: form.priority,
+        companyId: portalPerson?.companyId || portalPerson?.company?.id || "",
+        personId: portalPerson?.id || "",
       });
       return;
     }
     onSubmit({
-      title: form.title,
-      description: form.description,
-      companyId: form.companyId,
-      personId: form.personId,
+      title,
+      description,
+      companyId,
+      personId,
       priority: form.priority,
     });
   }
@@ -7583,7 +7804,9 @@ function NewTicketForm({
         <label>
           Title
           <input
+            name="title"
             required
+            autoComplete="off"
             value={form.title}
             onChange={(e) => update("title", e.target.value)}
             placeholder="Short summary of the issue"
@@ -7612,6 +7835,7 @@ function NewTicketForm({
                   variant="company"
                 />
                 <select
+                  name="companyId"
                   required
                   value={form.companyId}
                   onChange={(e) => update("companyId", e.target.value)}
@@ -7634,6 +7858,7 @@ function NewTicketForm({
                   size="md"
                 />
                 <select
+                  name="personId"
                   required
                   value={form.personId}
                   onChange={(e) => update("personId", e.target.value)}
@@ -7686,6 +7911,7 @@ function TicketDetail({
   agentName,
   saving,
   readOnly = false,
+  allowPriorityEdit = false,
   onBack,
   onStatusChange,
   onPriorityChange,
@@ -7873,7 +8099,7 @@ function TicketDetail({
             </label>
             <label>
               Priority
-              {readOnly ? (
+              {readOnly && !allowPriorityEdit ? (
                 <span className={`pill priority ${ticket.priority}`}>
                   {ticket.priority}
                 </span>

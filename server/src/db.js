@@ -264,6 +264,25 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS calendar_slots_date_idx
     ON calendar_slots (date, session);
+  CREATE TABLE IF NOT EXISTS alerts (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    ticket_id TEXT NOT NULL DEFAULT '',
+    ticket_title TEXT NOT NULL DEFAULT '',
+    comment_id TEXT NOT NULL DEFAULT '',
+    company_id TEXT NOT NULL DEFAULT '',
+    actor_role TEXT NOT NULL DEFAULT '',
+    actor_id TEXT NOT NULL DEFAULT '',
+    actor_name TEXT NOT NULL DEFAULT '',
+    dismissed_at TEXT NOT NULL DEFAULT '',
+    dismissed_by TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS alerts_open_idx
+    ON alerts (dismissed_at, created_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS alerts_ticket_idx
+    ON alerts (ticket_id, created_at DESC);
 `;
 
 function loadLegacyJson() {
@@ -2332,6 +2351,163 @@ async function clearActivityLog() {
   getSqlite().prepare(`DELETE FROM activity_log`).run();
 }
 
+const ALERT_SELECT_SQLITE = `
+  SELECT id, created_at AS createdAt, kind, message,
+         ticket_id AS ticketId, ticket_title AS ticketTitle,
+         comment_id AS commentId, company_id AS companyId,
+         actor_role AS actorRole, actor_id AS actorId, actor_name AS actorName,
+         dismissed_at AS dismissedAt, dismissed_by AS dismissedBy
+  FROM alerts
+`;
+
+const ALERT_SELECT_PG = `
+  SELECT id, created_at AS "createdAt", kind, message,
+         ticket_id AS "ticketId", ticket_title AS "ticketTitle",
+         comment_id AS "commentId", company_id AS "companyId",
+         actor_role AS "actorRole", actor_id AS "actorId", actor_name AS "actorName",
+         dismissed_at AS "dismissedAt", dismissed_by AS "dismissedBy"
+  FROM alerts
+`;
+
+function mapAlert(row) {
+  return {
+    id: row.id,
+    createdAt: row.createdAt,
+    kind: row.kind,
+    message: row.message || "",
+    ticketId: row.ticketId || "",
+    ticketTitle: row.ticketTitle || "",
+    commentId: row.commentId || "",
+    companyId: row.companyId || "",
+    actorRole: row.actorRole || "",
+    actorId: row.actorId || "",
+    actorName: row.actorName || "",
+  };
+}
+
+async function insertAlert(entry) {
+  await ensureReady();
+  const row = {
+    id: entry.id || randomUUID(),
+    createdAt: entry.createdAt || new Date().toISOString(),
+    kind: clipLogText(entry.kind, 32),
+    message: clipLogText(entry.message, 280),
+    ticketId: clipLogText(entry.ticketId, 64),
+    ticketTitle: clipLogText(entry.ticketTitle),
+    commentId: clipLogText(entry.commentId, 64),
+    companyId: clipLogText(entry.companyId, 64),
+    actorRole: clipLogText(entry.actorRole, 32),
+    actorId: clipLogText(entry.actorId, 64),
+    actorName: clipLogText(entry.actorName),
+    dismissedAt: "",
+    dismissedBy: "",
+  };
+  if (!row.kind || !row.ticketId) return null;
+  const values = [
+    row.id,
+    row.createdAt,
+    row.kind,
+    row.message,
+    row.ticketId,
+    row.ticketTitle,
+    row.commentId,
+    row.companyId,
+    row.actorRole,
+    row.actorId,
+    row.actorName,
+    row.dismissedAt,
+    row.dismissedBy,
+  ];
+  if (usePostgres()) {
+    await (
+      await getPg()
+    ).query(
+      `INSERT INTO alerts (
+         id, created_at, kind, message, ticket_id, ticket_title, comment_id,
+         company_id, actor_role, actor_id, actor_name, dismissed_at, dismissed_by
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      values
+    );
+  } else {
+    getSqlite()
+      .prepare(
+        `INSERT INTO alerts (
+           id, created_at, kind, message, ticket_id, ticket_title, comment_id,
+           company_id, actor_role, actor_id, actor_name, dismissed_at, dismissed_by
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(...values);
+  }
+  return mapAlert(row);
+}
+
+async function listOpenAlerts({ limit = 100 } = {}) {
+  await ensureReady();
+  const take = Math.min(Math.max(Number(limit) || 100, 1), 200);
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(
+      `${ALERT_SELECT_PG} WHERE dismissed_at = '' ORDER BY created_at DESC, id DESC LIMIT $1`,
+      [take]
+    );
+    return rows.map(mapAlert);
+  }
+  return getSqlite()
+    .prepare(
+      `${ALERT_SELECT_SQLITE} WHERE dismissed_at = '' ORDER BY created_at DESC, id DESC LIMIT ?`
+    )
+    .all(take)
+    .map(mapAlert);
+}
+
+async function dismissAlert(id, agentId = "") {
+  await ensureReady();
+  const alertId = String(id || "").trim();
+  if (!alertId) return null;
+  const dismissedAt = new Date().toISOString();
+  const dismissedBy = clipLogText(agentId, 64);
+  if (usePostgres()) {
+    const { rows } = await (
+      await getPg()
+    ).query(
+      `${ALERT_SELECT_PG} WHERE id = $1`,
+      [alertId]
+    );
+    if (!rows[0]) return null;
+    if (rows[0].dismissedAt) return mapAlert(rows[0]);
+    await (
+      await getPg()
+    ).query(
+      `UPDATE alerts SET dismissed_at = $1, dismissed_by = $2 WHERE id = $3 AND dismissed_at = ''`,
+      [dismissedAt, dismissedBy, alertId]
+    );
+    return mapAlert({ ...rows[0], dismissedAt, dismissedBy });
+  }
+  const existing = getSqlite()
+    .prepare(`${ALERT_SELECT_SQLITE} WHERE id = ?`)
+    .get(alertId);
+  if (!existing) return null;
+  if (existing.dismissedAt) return mapAlert(existing);
+  getSqlite()
+    .prepare(
+      `UPDATE alerts SET dismissed_at = ?, dismissed_by = ? WHERE id = ? AND dismissed_at = ''`
+    )
+    .run(dismissedAt, dismissedBy, alertId);
+  return mapAlert({ ...existing, dismissedAt, dismissedBy });
+}
+
+async function removeAlertsForTicket(ticketId) {
+  await ensureReady();
+  const id = String(ticketId || "").trim();
+  if (!id) return;
+  if (usePostgres()) {
+    await (await getPg()).query(`DELETE FROM alerts WHERE ticket_id = $1`, [id]);
+    return;
+  }
+  getSqlite().prepare(`DELETE FROM alerts WHERE ticket_id = ?`).run(id);
+}
+
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function isDateKey(value) {
@@ -2475,6 +2651,10 @@ export {
   listActivityLogs,
   listActivityLogActors,
   clearActivityLog,
+  insertAlert,
+  listOpenAlerts,
+  dismissAlert,
+  removeAlertsForTicket,
   isDateKey,
   listCalendarSlots,
   upsertCalendarSlot,
