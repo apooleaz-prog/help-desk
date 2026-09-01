@@ -268,18 +268,25 @@ function assetMetaParts(asset) {
 }
 
 function assetSearchText(asset) {
-  return [
-    asset.name,
-    asset.assetNumber,
-    asset.manufacturerName || asset.manufacturer?.name,
-    asset.assetTypeName || asset.assetType?.name,
-    asset.locationName || asset.location?.name,
-    asset.location?.address,
-    asset.personName || asset.person?.name,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+  const parts = [];
+  function walk(value, key) {
+    if (value == null || value === "") return;
+    if (key && (key === "id" || key === "image" || key.endsWith("Id"))) return;
+    const type = typeof value;
+    if (type === "string" || type === "number" || type === "boolean") {
+      parts.push(String(value));
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (type === "object") {
+      for (const [childKey, child] of Object.entries(value)) walk(child, childKey);
+    }
+  }
+  walk(asset);
+  return parts.join(" ").toLowerCase();
 }
 
 function FiveWitsLogo({ className }) {
@@ -2741,6 +2748,54 @@ function AssetNumberButton({ number, className = "", onClick }) {
   );
 }
 
+const ASSET_DETAIL_FIELDS = [
+  { key: "status", label: "Status" },
+  { key: "modelNumber", label: "Model number" },
+  { key: "vendor", label: "Vendor" },
+  { key: "tagNumber", label: "Tag number" },
+  { key: "address", label: "Street address" },
+  { key: "country", label: "Country" },
+  { key: "department", label: "Department" },
+  { key: "purchaseDate", label: "Purchase date" },
+  { key: "installationDate", label: "Installation date" },
+  { key: "warrantyExpiration", label: "Warranty expiration" },
+  { key: "installedBy", label: "Installed by" },
+  { key: "billCustomer", label: "Bill customer" },
+  { key: "ipAddress", label: "IP address" },
+  { key: "deviceId", label: "Device ID" },
+  { key: "defaultGateway", label: "Default gateway" },
+  { key: "macAddress", label: "MAC address" },
+  { key: "cpuSpeed", label: "CPU" },
+  { key: "osType", label: "OS type" },
+  { key: "physicalMemory", label: "Memory" },
+  { key: "osInfo", label: "OS info" },
+  { key: "localHardDrives", label: "Hard drives" },
+  { key: "lastLoginName", label: "Last login" },
+];
+
+function blankAssetDraft() {
+  return {
+    name: "",
+    assetNumber: "",
+    manufacturerId: "",
+    assetTypeId: "",
+    image: "",
+    personId: "",
+    locationId: "",
+    notes: "",
+    vendorNotes: "",
+    ...Object.fromEntries(ASSET_DETAIL_FIELDS.map((field) => [field.key, ""])),
+  };
+}
+
+function assetDraftFromRecord(asset) {
+  const draft = blankAssetDraft();
+  for (const key of Object.keys(draft)) {
+    if (asset?.[key] != null) draft[key] = asset[key];
+  }
+  return draft;
+}
+
 function assetPreviewRows(asset) {
   const manufacturer = manufacturerDisplay(asset);
   const typeName = asset.assetType?.name || asset.assetTypeName || "";
@@ -2749,13 +2804,26 @@ function assetPreviewRows(asset) {
   const locationAddress = asset.location?.address || "";
   const rows = [
     { label: "Asset number", value: asset.assetNumber || "", kind: "number" },
-    { label: "Model number", value: asset.name || "" },
+    { label: "Name", value: asset.name || "" },
     { label: "Type", value: typeName },
     { label: "Manufacturer", value: manufacturer, kind: "manufacturer" },
     { label: "Assigned to", value: person, kind: "person" },
     { label: "Location", value: locationName },
-    { label: "Address", value: locationAddress },
+    { label: "Location address", value: locationAddress },
   ];
+  for (const field of ASSET_DETAIL_FIELDS) {
+    const value = String(asset[field.key] || "").trim();
+    if (value) rows.push({ label: field.label, value });
+  }
+  if (asset.contactName && !person?.name) {
+    rows.push({ label: "Contact", value: asset.contactName });
+  }
+  if (asset.vendorNotes) {
+    rows.push({ label: "Vendor notes", value: asset.vendorNotes, kind: "notes" });
+  }
+  if (asset.notes) {
+    rows.push({ label: "Notes", value: asset.notes, kind: "notes" });
+  }
   if (asset.createdAt) {
     rows.push({ label: "Created", value: formatDate(asset.createdAt) });
   }
@@ -2833,6 +2901,8 @@ function AssetPreviewDialog({ asset, onClose }) {
                       ) : null}
                       {row.value.name}
                     </span>
+                  ) : row.kind === "notes" ? (
+                    <NotesContent text={row.value} />
                   ) : (
                     row.value
                   )}
@@ -4023,6 +4093,7 @@ function AgentsView({
     phone: "",
     password: "",
     color: DEFAULT_AGENT_COLOR,
+    emailAlerts: false,
   };
   const [draft, setDraft] = useState(blank);
   const [showCreate, setShowCreate] = useState(false);
@@ -4057,6 +4128,7 @@ function AgentsView({
         phone: agent.phone || "",
         password: "",
         color: agentColorValue(agent.color),
+        emailAlerts: Boolean(agent.emailAlerts),
       });
     } else {
       setEditingAgent(false);
@@ -4087,6 +4159,7 @@ function AgentsView({
       email: editForm.email,
       phone: editForm.phone,
       color: agentColorValue(editForm.color),
+      emailAlerts: Boolean(editForm.emailAlerts),
     };
     if (editForm.password.trim()) {
       payload.password = editForm.password;
@@ -4228,6 +4301,20 @@ function AgentsView({
                   placeholder="Leave blank to keep"
                 />
               </label>
+              <label className="internal-check">
+                <input
+                  type="checkbox"
+                  checked={Boolean(editForm.emailAlerts)}
+                  onChange={(e) =>
+                    setEditForm((form) => ({
+                      ...form,
+                      emailAlerts: e.target.checked,
+                    }))
+                  }
+                  disabled={saving}
+                />
+                Email alerts
+              </label>
               <div className="form-actions">
                 <CancelIconButton
                   disabled={saving}
@@ -4268,6 +4355,9 @@ function AgentsView({
                         {selectedAgent.phone}
                       </a>
                     ) : null}
+                    <span className="muted">
+                      Email alerts: {selectedAgent.emailAlerts ? "On" : "Off"}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -4364,6 +4454,17 @@ function AgentsView({
               onChange={(e) => setDraft((d) => ({ ...d, password: e.target.value }))}
               placeholder="At least 6 characters"
             />
+          </label>
+          <label className="internal-check">
+            <input
+              type="checkbox"
+              checked={Boolean(draft.emailAlerts)}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, emailAlerts: e.target.checked }))
+              }
+              disabled={saving}
+            />
+            Email alerts
           </label>
           <div className="form-actions">
             <CancelIconButton
@@ -4634,7 +4735,7 @@ function CatalogView({
   }
 
   return (
-    <section className="panel">
+    <section className="panel catalog-panel">
       <div className="panel-head">
         <div>
           <h1>{title}</h1>
@@ -4695,34 +4796,36 @@ function CatalogView({
         </form>
       )}
 
-      {items.length === 0 && !showCreate ? (
-        <p className="muted catalog-empty">{emptyLabel}</p>
-      ) : (
-        <ul className="company-list">
-          {items.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                className="company-list-row"
-                onClick={() => openItem(item)}
-              >
-                <PersonAvatar
-                  name={item.name}
-                  image={withImage ? item.image || item.logo : undefined}
-                  size="md"
-                  variant={withImage ? imageVariant : "company"}
-                />
-                <div className="company-list-copy">
-                  <strong>{item.name}</strong>
-                  {item.details ? (
-                    <span className="muted">{item.details}</span>
-                  ) : null}
-                </div>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <div className="catalog-list-body">
+        {items.length === 0 && !showCreate ? (
+          <p className="muted catalog-empty">{emptyLabel}</p>
+        ) : (
+          <ul className="company-list">
+            {items.map((item) => (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  className="company-list-row"
+                  onClick={() => openItem(item)}
+                >
+                  <PersonAvatar
+                    name={item.name}
+                    image={withImage ? item.image || item.logo : undefined}
+                    size="md"
+                    variant={withImage ? imageVariant : "company"}
+                  />
+                  <div className="company-list-copy">
+                    <strong>{item.name}</strong>
+                    {item.details ? (
+                      <span className="muted">{item.details}</span>
+                    ) : null}
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {deleteDialog}
     </section>
   );
@@ -5940,6 +6043,52 @@ function TicketList({
   );
 }
 
+function AssetExtraFields({ draft, setDraft, disabled }) {
+  return (
+    <>
+      <div className="form-row">
+        {ASSET_DETAIL_FIELDS.map((field) => (
+          <label key={field.key}>
+            {field.label} <span className="optional">(optional)</span>
+            <input
+              value={draft[field.key] || ""}
+              disabled={disabled}
+              onChange={(e) =>
+                setDraft((current) => ({
+                  ...current,
+                  [field.key]: e.target.value,
+                }))
+              }
+            />
+          </label>
+        ))}
+      </div>
+      <div className="form-field">
+        Vendor notes <span className="optional">(optional)</span>
+        <NotesField
+          rows={2}
+          value={draft.vendorNotes || ""}
+          disabled={disabled}
+          placeholder="Vendor notes"
+          onChange={(vendorNotes) =>
+            setDraft((current) => ({ ...current, vendorNotes }))
+          }
+        />
+      </div>
+      <div className="form-field">
+        Notes <span className="optional">(optional)</span>
+        <NotesField
+          rows={4}
+          value={draft.notes || ""}
+          disabled={disabled}
+          placeholder="Passwords, account info, and other notes"
+          onChange={(notes) => setDraft((current) => ({ ...current, notes }))}
+        />
+      </div>
+    </>
+  );
+}
+
 function CompanyAssetsPanel({
   company,
   manufacturers,
@@ -5949,30 +6098,27 @@ function CompanyAssetsPanel({
   onUpdate,
   onDelete,
 }) {
-  const blank = {
-    name: "",
-    assetNumber: "",
-    manufacturerId: "",
-    assetTypeId: "",
-    image: "",
-    personId: "",
-    locationId: "",
-  };
   const companyPeople = company.people ?? [];
   const [assets, setAssets] = useState([]);
   const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const [draft, setDraft] = useState(blank);
+  const [draft, setDraft] = useState(blankAssetDraft);
   const [viewingId, setViewingId] = useState(null);
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState(blank);
+  const [editForm, setEditForm] = useState(blankAssetDraft);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [previewAsset, setPreviewAsset] = useState(null);
+  const [filter, setFilter] = useState("");
   const listRef = useRef(null);
-  useCollapseMiddles(listRef, [assets, editingId, viewingId]);
   const viewingAsset =
     viewingId ? assets.find((asset) => asset.id === viewingId) ?? null : null;
+  const filteredAssets = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    if (!needle) return assets;
+    return assets.filter((asset) => assetSearchText(asset).includes(needle));
+  }, [assets, filter]);
+  useCollapseMiddles(listRef, [filteredAssets, editingId, viewingId]);
 
   async function reload() {
     const data = await fetchCompanyAssets(company.id);
@@ -5986,6 +6132,7 @@ function CompanyAssetsPanel({
     setViewingId(null);
     setEditingId(null);
     setShowCreate(false);
+    setFilter("");
     Promise.all([fetchCompanyAssets(company.id), fetchCompanyLocations(company.id)])
       .then(([assetRows, locationRows]) => {
         if (!cancelled) {
@@ -6011,7 +6158,7 @@ function CompanyAssetsPanel({
     e.preventDefault();
     try {
       await onCreate(company.id, draft);
-      setDraft(blank);
+      setDraft(blankAssetDraft());
       setShowCreate(false);
       await reload();
     } catch {
@@ -6022,15 +6169,7 @@ function CompanyAssetsPanel({
   function startEdit(asset) {
     setViewingId(asset.id);
     setEditingId(asset.id);
-    setEditForm({
-      name: asset.name || "",
-      assetNumber: asset.assetNumber || "",
-      manufacturerId: asset.manufacturerId,
-      assetTypeId: asset.assetTypeId,
-      image: asset.image || "",
-      personId: asset.personId || "",
-      locationId: asset.locationId || "",
-    });
+    setEditForm(assetDraftFromRecord(asset));
     setShowCreate(false);
   }
 
@@ -6084,7 +6223,7 @@ function CompanyAssetsPanel({
                 closeAsset();
                 return;
               }
-              setDraft(blank);
+              setDraft(blankAssetDraft());
               setShowCreate(false);
             }}
           />
@@ -6101,6 +6240,18 @@ function CompanyAssetsPanel({
           />
         )}
       </div>
+
+      {!viewingAsset && !showCreate && (
+        <label className="asset-filter">
+          <span className="sr-only">Filter assets</span>
+          <input
+            type="search"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter assets"
+          />
+        </label>
+      )}
 
       {!canAdd && !viewingAsset && !showCreate && (
         <p className="muted">
@@ -6119,12 +6270,12 @@ function CompanyAssetsPanel({
           />
           <div className="form-row two">
             <label>
-              Model number
+              Name
               <input
                 required
                 value={draft.name}
                 onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                placeholder="MX-C303P"
+                placeholder="159-CASSIDY-DT"
               />
             </label>
             <label>
@@ -6209,11 +6360,16 @@ function CompanyAssetsPanel({
               </select>
             </label>
           </div>
+          <AssetExtraFields
+            draft={draft}
+            setDraft={setDraft}
+            disabled={saving}
+          />
           <div className="form-actions">
             <CancelIconButton
               disabled={saving}
               onClick={() => {
-                setDraft(blank);
+                setDraft(blankAssetDraft());
                 setShowCreate(false);
               }}
             />
@@ -6243,7 +6399,7 @@ function CompanyAssetsPanel({
             />
             <div className="form-row two">
               <label>
-                Model number
+                Name
                 <input
                   required
                   value={editForm.name}
@@ -6360,6 +6516,11 @@ function CompanyAssetsPanel({
                 </select>
               </label>
             </div>
+            <AssetExtraFields
+              draft={editForm}
+              setDraft={setEditForm}
+              disabled={saving}
+            />
             <div className="form-actions">
               <CancelIconButton onClick={() => setEditingId(null)} />
               <button
@@ -6421,13 +6582,47 @@ function CompanyAssetsPanel({
                 />
               </div>
             </div>
+            {(() => {
+              const skip = new Set([
+                "Asset number",
+                "Name",
+                "Type",
+                "Manufacturer",
+                "Assigned to",
+                "Location",
+                "Created",
+                "Updated",
+              ]);
+              const rows = assetPreviewRows(viewingAsset).filter(
+                (row) => !skip.has(row.label)
+              );
+              if (rows.length === 0) return null;
+              return (
+                <dl className="asset-preview-fields asset-detail-fields">
+                  {rows.map((row) => (
+                    <div key={row.label} className="asset-preview-row">
+                      <dt>{row.label}</dt>
+                      <dd>
+                        {row.kind === "notes" ? (
+                          <NotesContent text={row.value} />
+                        ) : (
+                          row.value
+                        )}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              );
+            })()}
           </div>
         )
       ) : showCreate ? null : assets.length === 0 ? (
         <p className="muted">No assets yet.</p>
+      ) : filteredAssets.length === 0 ? (
+        <p className="muted">No assets match that filter.</p>
       ) : (
         <ul className="asset-list" ref={listRef}>
-          {assets.map((asset) => {
+          {filteredAssets.map((asset) => {
             const title = asset.name || asset.assetType?.name;
             const typeName =
               asset.assetType?.name && asset.assetType.name !== title

@@ -643,7 +643,8 @@
 
 .main:has(.tickets-panel),
 .main:has(.log-panel),
-.main:has(.calendar-panel) {
+.main:has(.calendar-panel),
+.main:has(.catalog-panel) {
   overflow: hidden;
   padding-bottom: 0.35rem;
 }
@@ -3438,6 +3439,31 @@ button.asset-number:focus-visible {
   padding: 0.5rem 1.4rem 1.5rem;
 }
 
+.catalog-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.catalog-panel .panel-head,
+.catalog-panel .agent-create {
+  flex-shrink: 0;
+}
+
+.catalog-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.catalog-list-body .company-list {
+  padding-top: 0.15rem;
+}
+
 .company-list-copy strong .pill {
   margin-left: 0.4rem;
   font-size: 0.72rem;
@@ -3485,16 +3511,21 @@ button.asset-number:focus-visible {
   margin: 0;
 }
 
+.customers-panel {
+  overflow-x: clip;
+  overflow-y: visible;
+  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .company-detail {
   padding: 0.15rem 1.4rem 1.4rem;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-}
-
-.customers-panel {
-  overflow: visible;
-  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .company-section {
@@ -3505,7 +3536,10 @@ button.asset-number:focus-visible {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--wash);
-  overflow: visible;
+  overflow-x: clip;
+  overflow-y: visible;
+  min-width: 0;
+  max-width: 100%;
   min-height: min-content;
 }
 
@@ -3519,6 +3553,26 @@ button.asset-number:focus-visible {
 .company-section-head h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+.asset-filter {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.asset-filter input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+}
+
+.asset-filter input:focus {
+  outline: 2px solid color-mix(in srgb, var(--brand) 45%, white);
+  border-color: var(--brand);
 }
 
 .location-list {
@@ -3634,6 +3688,14 @@ button.asset-number:focus-visible {
   padding: 0;
   display: grid;
   gap: 0.55rem;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.asset-list > li {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .asset-row {
@@ -3641,6 +3703,9 @@ button.asset-number:focus-visible {
   align-items: flex-start;
   gap: 0.75rem;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 0.7rem 0.8rem;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -3710,7 +3775,13 @@ button.asset-number:focus-visible {
 
 .asset-row-number,
 .asset-number {
-  flex-shrink: 0;
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(10.5rem, 36%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.78rem;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -3736,8 +3807,8 @@ button.asset-number:focus-visible {
 }
 
 .asset-preview-dialog {
-  width: min(34rem, 100%);
-  max-height: min(86vh, 40rem);
+  width: min(42rem, 100%);
+  max-height: min(86vh, 48rem);
   overflow: auto;
   background: var(--raised);
   border: 1px solid var(--line);
@@ -3768,11 +3839,12 @@ button.asset-number:focus-visible {
 
 .asset-preview-row {
   display: grid;
-  grid-template-columns: 8.5rem 1fr;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
   gap: 0.75rem;
   align-items: start;
   padding-top: 0.7rem;
   border-top: 1px solid var(--line);
+  min-width: 0;
 }
 
 .asset-preview-row:first-child {
@@ -3790,6 +3862,7 @@ button.asset-number:focus-visible {
 .asset-preview-row dd {
   margin: 0;
   min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 0.95rem;
   line-height: 1.4;
 }
@@ -3822,6 +3895,8 @@ button.asset-number:focus-visible {
   font-size: 0.82rem;
   line-height: 1.35;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .asset-row-meta > * + *::before,
@@ -3859,16 +3934,56 @@ button.asset-number:focus-visible {
   gap: 0.35rem;
 }
 
+.asset-detail {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
 .asset-detail .company-card-head {
   margin-bottom: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.asset-detail .company-card-identity > div {
+  min-width: 0;
+}
+
+.asset-detail .person-detail-name {
+  overflow-wrap: anywhere;
+}
+
+.asset-detail .person-detail-meta {
+  max-width: 100%;
+}
+
+.asset-detail .asset-number {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.asset-detail-fields {
+  margin-top: 1rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .asset-form {
   margin: 0;
-  overflow: visible;
+  padding: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+  min-width: 0;
+  max-width: 100%;
   min-height: min-content;
   max-height: none;
   flex-shrink: 0;
+}
+
+.asset-form .form-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .btn.icon-taller {
@@ -4448,11 +4563,17 @@ button.asset-number:focus-visible {
     overflow-x: clip;
   }
 
-  .form.asset-form,
   .form.person-edit,
   .form.person-add,
   .form.location-form {
     overflow: visible;
+  }
+
+  .form.asset-form {
+    padding-left: 0;
+    padding-right: 0;
+    overflow-x: clip;
+    overflow-y: visible;
   }
 
   .contact-person-field {

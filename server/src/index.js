@@ -16,7 +16,7 @@ import {
   requireAuth,
   verifyPassword,
 } from "./auth.js";
-import { passwordResetEmail, sendMail } from "./mail.js";
+import { alertDigestEmail, passwordResetEmail, sendMail } from "./mail.js";
 import {
   passwordUpdatedPage,
   resetPasswordPage,
@@ -28,6 +28,7 @@ import {
   PRIORITIES,
   SQLITE_PATH,
   STATUSES,
+  ASSET_EXTRA_KEYS,
   normalizeAgentColor,
   persistDurationMinutes,
   enrichTicket,
@@ -111,6 +112,17 @@ const NOTES_BODY_MAX = 8_000_000;
 
 function notesBodyTooLarge(value) {
   return typeof value === "string" && value.length > NOTES_BODY_MAX;
+}
+
+function pickAssetDetailFields(body) {
+  const fields = {};
+  if (!body || typeof body !== "object") return fields;
+  if (body.status !== undefined) fields.status = String(body.status ?? "").trim();
+  if (body.notes !== undefined) fields.notes = String(body.notes ?? "");
+  for (const key of ASSET_EXTRA_KEYS) {
+    if (body[key] !== undefined) fields[key] = String(body[key] ?? "").trim();
+  }
+  return fields;
 }
 
 function normalizePersonImage(image) {
@@ -436,6 +448,53 @@ function appBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
+const ALERT_MAIL_MS = 60_000;
+let alertMailBusy = false;
+
+function alertMailAppUrl() {
+  return (
+    String(process.env.APP_URL || "").trim().replace(/\/$/, "") ||
+    `http://localhost:${PORT}`
+  );
+}
+
+async function sendOpenAlertEmails() {
+  if (alertMailBusy) return;
+  alertMailBusy = true;
+  try {
+    const alerts = await listOpenAlerts();
+    if (!alerts.length) return;
+    const db = await readDb();
+    const recipients = (db.agents ?? []).filter(
+      (agent) => agent.emailAlerts && agent.email
+    );
+    if (!recipients.length) return;
+    const digest = alertDigestEmail({
+      alerts,
+      appUrl: alertMailAppUrl(),
+    });
+    for (const agent of recipients) {
+      try {
+        await sendMail({ to: agent.email, ...digest });
+      } catch (err) {
+        console.error(`Failed to send alert email to ${agent.email}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to send alert emails:", err);
+  } finally {
+    alertMailBusy = false;
+  }
+}
+
+function startAlertMailer() {
+  setInterval(() => {
+    sendOpenAlertEmails().catch((err) => {
+      console.error("Failed to send alert emails:", err);
+    });
+  }, ALERT_MAIL_MS);
+}
+
 function resetTokenRowValid(row) {
   return Boolean(row?.expiresAt && row.expiresAt > new Date().toISOString());
 }
@@ -704,7 +763,7 @@ app.get("/api/agents", requireAgent, async (_req, res) => {
 });
 
 app.post("/api/agents", requireAgent, async (req, res) => {
-  const { name, email, phone, password, color } = req.body ?? {};
+  const { name, email, phone, password, color, emailAlerts } = req.body ?? {};
 
   if (!name?.trim() || !email?.trim() || !password) {
     return res.status(400).json({ error: "name, email, and password are required" });
@@ -736,6 +795,7 @@ app.post("/api/agents", requireAgent, async (req, res) => {
     email: normalizedEmail,
     ...(normalizedPhone ? { phone: normalizedPhone } : {}),
     color: agentColor,
+    emailAlerts: Boolean(emailAlerts),
     passwordHash: hashPassword(password),
     createdAt: now,
     updatedAt: now,
@@ -760,7 +820,7 @@ app.patch("/api/agents/:id", requireAgent, async (req, res) => {
     return res.status(404).json({ error: "Agent not found" });
   }
 
-  const { name, email, phone, password, color } = req.body ?? {};
+  const { name, email, phone, password, color, emailAlerts } = req.body ?? {};
   const agent = db.agents[index];
 
   if (name !== undefined) {
@@ -807,6 +867,10 @@ app.patch("/api/agents/:id", requireAgent, async (req, res) => {
     }
     agent.passwordHash = hashPassword(password);
     await destroySessionsForAgent(agent.id);
+  }
+
+  if (emailAlerts !== undefined) {
+    agent.emailAlerts = Boolean(emailAlerts);
   }
 
   agent.updatedAt = new Date().toISOString();
@@ -1559,10 +1623,14 @@ app.post("/api/companies/:id/assets", requireAgent, async (req, res) => {
 
   const { name, assetNumber, manufacturerId, assetTypeId, image, personId, locationId } =
     req.body ?? {};
+  const details = pickAssetDetailFields(req.body);
   if (!name?.trim() || !String(assetNumber ?? "").trim() || !manufacturerId || !assetTypeId) {
     return res.status(400).json({
-      error: "model number, asset number, manufacturer, and asset type are required",
+      error: "name, asset number, manufacturer, and asset type are required",
     });
+  }
+  if (notesBodyTooLarge(details.notes) || notesBodyTooLarge(details.vendorNotes)) {
+    return res.status(400).json({ error: "notes are too large" });
   }
 
   const normalizedImage = normalizePersonImage(image);
@@ -1614,6 +1682,7 @@ app.post("/api/companies/:id/assets", requireAgent, async (req, res) => {
     image: normalizedImage || "",
     personId: assigned.personId || "",
     locationId: assignedLocation.locationId || "",
+    ...details,
     createdAt: now,
     updatedAt: now,
   });
@@ -1635,11 +1704,19 @@ app.patch("/api/companies/:companyId/assets/:assetId", requireAgent, async (req,
 
   const { name, assetNumber, manufacturerId, assetTypeId, image, personId, locationId } =
     req.body ?? {};
-  const fields = {};
+  const details = pickAssetDetailFields(req.body);
+  const fields = { ...details };
+
+  if (details.notes !== undefined && notesBodyTooLarge(details.notes)) {
+    return res.status(400).json({ error: "notes are too large" });
+  }
+  if (details.vendorNotes !== undefined && notesBodyTooLarge(details.vendorNotes)) {
+    return res.status(400).json({ error: "notes are too large" });
+  }
 
   if (name !== undefined) {
     if (!String(name).trim()) {
-      return res.status(400).json({ error: "model number is required" });
+      return res.status(400).json({ error: "name is required" });
     }
     fields.name = String(name).trim();
   }
@@ -2333,6 +2410,7 @@ ensureReady()
         console.log(`SQLite database: ${SQLITE_PATH}`);
         console.log(`Interactive SQL: sqlite3 "${SQLITE_PATH}"`);
       }
+      startAlertMailer();
     });
   })
   .catch((err) => {

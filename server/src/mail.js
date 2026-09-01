@@ -118,4 +118,78 @@ function passwordResetEmail({ name, resetUrl }) {
   };
 }
 
-export { sendMail, passwordResetEmail };
+function alertKindLabel(kind) {
+  if (kind === "callback") return "Call back";
+  if (kind === "urgent") return "Urgent";
+  return "Alert";
+}
+
+function formatAlertWhen(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function alertDigestEmail({ alerts, appUrl }) {
+  const count = alerts.length;
+  const subject =
+    count === 1
+      ? `Help Desk alert: ${alerts[0].message || alertKindLabel(alerts[0].kind)}`
+      : `Help Desk: ${count} open alerts`;
+  const lines = alerts.map((alert) => {
+    const kind = alertKindLabel(alert.kind);
+    const when = formatAlertWhen(alert.createdAt);
+    const ticket = alert.ticketTitle || alert.ticketId || "a ticket";
+    return [
+      `${kind}: ${alert.message || "New alert"}`,
+      `From ticket: ${ticket}`,
+      when ? `Opened: ${when}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  const text = [
+    count === 1
+      ? "There is an open Help Desk alert:"
+      : `There are ${count} open Help Desk alerts:`,
+    "",
+    ...lines.flatMap((block, i) => (i ? ["", block] : [block])),
+    "",
+    `Open Help Desk: ${appUrl}`,
+    "These emails stop when all alerts are cleared.",
+    "",
+  ].join("\n");
+  const htmlItems = alerts
+    .map((alert) => {
+      const kind = escapeHtml(alertKindLabel(alert.kind));
+      const message = escapeHtml(alert.message || "New alert");
+      const ticket = escapeHtml(alert.ticketTitle || alert.ticketId || "a ticket");
+      const when = formatAlertWhen(alert.createdAt);
+      return [
+        "<li>",
+        `<p><strong>${kind}</strong> — ${message}</p>`,
+        `<p>From ticket: ${ticket}</p>`,
+        when ? `<p>Opened: ${escapeHtml(when)}</p>` : "",
+        "</li>",
+      ].join("");
+    })
+    .join("");
+  const html = [
+    `<p>${
+      count === 1
+        ? "There is an open Help Desk alert:"
+        : `There are ${count} open Help Desk alerts:`
+    }</p>`,
+    `<ul>${htmlItems}</ul>`,
+    `<p><a href="${escapeHtml(appUrl)}">Open Help Desk</a></p>`,
+    "<p>These emails stop when all alerts are cleared.</p>",
+  ].join("");
+  return { subject, text, html };
+}
+
+export { sendMail, passwordResetEmail, alertDigestEmail };

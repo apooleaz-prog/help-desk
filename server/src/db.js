@@ -140,6 +140,7 @@ const SCHEMA_SQL = `
     phone TEXT NOT NULL DEFAULT '',
     color TEXT NOT NULL DEFAULT '#0d9488',
     password_hash TEXT NOT NULL,
+    email_alerts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -306,7 +307,7 @@ function usePostgres() {
   return Boolean(DATABASE_URL);
 }
 
-const ASSET_SNAPSHOT_SQL = `id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, location_id, created_at, updated_at`;
+const ASSET_SNAPSHOT_SQL = `id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, location_id, status, notes, extra_json, created_at, updated_at`;
 const LOCATION_SNAPSHOT_SQL = `id, company_id, name, address, details, created_at, updated_at`;
 
 function locationSnapshotValues(location) {
@@ -332,6 +333,9 @@ function assetSnapshotValues(asset) {
     asset.image ?? "",
     asset.person_id || null,
     asset.location_id || null,
+    asset.status ?? "",
+    asset.notes ?? "",
+    asset.extra_json ?? "{}",
     asset.created_at,
     asset.updated_at,
   ];
@@ -520,7 +524,7 @@ function writeSqliteSnapshot(database, data) {
       DELETE FROM assets; DELETE FROM locations;
     `);
     const insertAgent = database.prepare(
-      `INSERT INTO agents (id, name, email, phone, color, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO agents (id, name, email, phone, color, password_hash, email_alerts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const agent of data.agents ?? []) {
       insertAgent.run(
@@ -530,6 +534,7 @@ function writeSqliteSnapshot(database, data) {
         agent.phone ?? "",
         agent.color || DEFAULT_AGENT_COLOR,
         agent.passwordHash,
+        persistEmailAlerts(agent.emailAlerts) ? 1 : 0,
         agent.createdAt,
         agent.updatedAt
       );
@@ -641,7 +646,7 @@ function writeSqliteSnapshot(database, data) {
     }
     const companyIds = incomingCompanyIds;
     const insertAsset = database.prepare(
-      `INSERT INTO assets (${ASSET_SNAPSHOT_SQL}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO assets (${ASSET_SNAPSHOT_SQL}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const asset of savedAssets) {
       if (!companyIds.has(asset.company_id)) continue;
@@ -693,7 +698,8 @@ function writeSqliteSnapshot(database, data) {
 function readSqliteSnapshot(database) {
   const agents = database
     .prepare(
-      `SELECT id, name, email, phone, color, password_hash AS passwordHash, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, name, email, phone, color, password_hash AS passwordHash,
+              email_alerts AS emailAlerts, created_at AS createdAt, updated_at AS updatedAt
        FROM agents ORDER BY name`
     )
     .all()
@@ -701,6 +707,7 @@ function readSqliteSnapshot(database) {
       ...a,
       phone: a.phone || undefined,
       color: a.color || DEFAULT_AGENT_COLOR,
+      emailAlerts: persistEmailAlerts(a.emailAlerts),
     }));
   const sessions = database
     .prepare(
@@ -793,8 +800,8 @@ async function writePgSnapshot(pool, data) {
     `);
     for (const agent of data.agents ?? []) {
       await client.query(
-        `INSERT INTO agents (id, name, email, phone, color, password_hash, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `INSERT INTO agents (id, name, email, phone, color, password_hash, email_alerts, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           agent.id,
           agent.name,
@@ -802,6 +809,7 @@ async function writePgSnapshot(pool, data) {
           agent.phone ?? "",
           agent.color || DEFAULT_AGENT_COLOR,
           agent.passwordHash,
+          persistEmailAlerts(agent.emailAlerts) ? 1 : 0,
           agent.createdAt,
           agent.updatedAt,
         ]
@@ -922,7 +930,7 @@ async function writePgSnapshot(pool, data) {
       if (!companyIds.has(asset.company_id)) continue;
       await client.query(
         `INSERT INTO assets (${ASSET_SNAPSHOT_SQL})
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         assetSnapshotValues(asset)
       );
     }
@@ -972,13 +980,15 @@ async function writePgSnapshot(pool, data) {
 async function readPgSnapshot(pool) {
   const agents = (
     await pool.query(
-      `SELECT id, name, email, phone, color, password_hash AS "passwordHash", created_at AS "createdAt", updated_at AS "updatedAt"
+      `SELECT id, name, email, phone, color, password_hash AS "passwordHash",
+              email_alerts AS "emailAlerts", created_at AS "createdAt", updated_at AS "updatedAt"
        FROM agents ORDER BY name`
     )
   ).rows.map((a) => ({
     ...a,
     phone: a.phone || undefined,
     color: a.color || DEFAULT_AGENT_COLOR,
+    emailAlerts: persistEmailAlerts(a.emailAlerts),
   }));
   const sessions = (
     await pool.query(
@@ -1071,6 +1081,9 @@ function getSqlite() {
       `ALTER TABLE agents ADD COLUMN color TEXT NOT NULL DEFAULT '${DEFAULT_AGENT_COLOR}'`
     );
   }
+  if (!agentCols.some((col) => col.name === "email_alerts")) {
+    sqliteDb.exec(`ALTER TABLE agents ADD COLUMN email_alerts INTEGER NOT NULL DEFAULT 0`);
+  }
   const assetTypeCols = sqliteDb.prepare(`PRAGMA table_info(asset_types)`).all();
   if (assetTypeCols.length && !assetTypeCols.some((col) => col.name === "image")) {
     sqliteDb.exec(`ALTER TABLE asset_types ADD COLUMN image TEXT NOT NULL DEFAULT ''`);
@@ -1094,6 +1107,15 @@ function getSqlite() {
   }
   if (assetCols.length && !assetCols.some((col) => col.name === "location_id")) {
     sqliteDb.exec(`ALTER TABLE assets ADD COLUMN location_id TEXT REFERENCES locations(id)`);
+  }
+  if (assetCols.length && !assetCols.some((col) => col.name === "status")) {
+    sqliteDb.exec(`ALTER TABLE assets ADD COLUMN status TEXT NOT NULL DEFAULT ''`);
+  }
+  if (assetCols.length && !assetCols.some((col) => col.name === "notes")) {
+    sqliteDb.exec(`ALTER TABLE assets ADD COLUMN notes TEXT NOT NULL DEFAULT ''`);
+  }
+  if (assetCols.length && !assetCols.some((col) => col.name === "extra_json")) {
+    sqliteDb.exec(`ALTER TABLE assets ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'`);
   }
   const ticketCols = sqliteDb.prepare(`PRAGMA table_info(tickets)`).all();
   if (ticketCols.length && !ticketCols.some((col) => col.name === "creator_agent_id")) {
@@ -1200,6 +1222,15 @@ async function getPg() {
     `ALTER TABLE assets ADD COLUMN IF NOT EXISTS location_id TEXT REFERENCES locations(id) ON DELETE SET NULL`
   );
   await pgPool.query(
+    `ALTER TABLE assets ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE assets ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''`
+  );
+  await pgPool.query(
+    `ALTER TABLE assets ADD COLUMN IF NOT EXISTS extra_json TEXT NOT NULL DEFAULT '{}'`
+  );
+  await pgPool.query(
     `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS creator_agent_id TEXT REFERENCES agents(id)`
   );
   await pgPool.query(
@@ -1224,6 +1255,9 @@ async function getPg() {
     `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id) ON DELETE CASCADE`
   );
   await pgPool.query(`ALTER TABLE sessions ALTER COLUMN agent_id DROP NOT NULL`);
+  await pgPool.query(
+    `ALTER TABLE agents ADD COLUMN IF NOT EXISTS email_alerts INTEGER NOT NULL DEFAULT 0`
+  );
   await pgPool.query(`UPDATE tickets SET status = 'on_hold' WHERE status = 'resolved'`);
   const { rows } = await pgPool.query(`SELECT COUNT(*)::int AS c FROM agents`);
   if (rows[0].c === 0) {
@@ -1438,6 +1472,58 @@ function createNamedCatalog(table, { hasImage = false } = {}) {
 const manufacturerCatalog = createNamedCatalog("manufacturers", { hasImage: true });
 const assetTypeCatalog = createNamedCatalog("asset_types", { hasImage: true });
 
+export const ASSET_EXTRA_KEYS = [
+  "vendor",
+  "contactName",
+  "address",
+  "modelNumber",
+  "tagNumber",
+  "country",
+  "purchaseDate",
+  "installationDate",
+  "department",
+  "warrantyExpiration",
+  "installedBy",
+  "billCustomer",
+  "ipAddress",
+  "deviceId",
+  "defaultGateway",
+  "macAddress",
+  "cpuSpeed",
+  "osType",
+  "physicalMemory",
+  "osInfo",
+  "localHardDrives",
+  "lastLoginName",
+  "vendorNotes",
+];
+
+function emptyAssetExtra() {
+  return Object.fromEntries(ASSET_EXTRA_KEYS.map((key) => [key, ""]));
+}
+
+function parseAssetExtra(raw) {
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw || "{}") : raw;
+    if (!value || typeof value !== "object") return emptyAssetExtra();
+    const extra = emptyAssetExtra();
+    for (const key of ASSET_EXTRA_KEYS) {
+      extra[key] = String(value[key] ?? "").trim();
+    }
+    return extra;
+  } catch {
+    return emptyAssetExtra();
+  }
+}
+
+function serializeAssetExtra(fields) {
+  const extra = emptyAssetExtra();
+  for (const key of ASSET_EXTRA_KEYS) {
+    extra[key] = String(fields?.[key] ?? "").trim();
+  }
+  return JSON.stringify(extra);
+}
+
 const listManufacturers = () => manufacturerCatalog.list();
 const findManufacturerById = (id) => manufacturerCatalog.findById(id);
 const findManufacturerByName = (name) => manufacturerCatalog.findByName(name);
@@ -1456,6 +1542,7 @@ const removeAssetType = (id) => assetTypeCatalog.remove(id);
 function mapAsset(row) {
   const personId = row.personId || "";
   const locationId = row.locationId || "";
+  const extra = parseAssetExtra(row.extraJson ?? row.extra_json);
   return {
     id: row.id,
     companyId: row.companyId,
@@ -1466,6 +1553,9 @@ function mapAsset(row) {
     locationId,
     manufacturerId: row.manufacturerId,
     assetTypeId: row.assetTypeId,
+    status: row.status || "",
+    notes: row.notes || "",
+    ...extra,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     manufacturer: {
@@ -1501,6 +1591,7 @@ const ASSET_SELECT_SQLITE = `
   SELECT a.id, a.company_id AS companyId, a.name, a.asset_number AS assetNumber, a.image,
          a.person_id AS personId, a.location_id AS locationId,
          a.manufacturer_id AS manufacturerId, a.asset_type_id AS assetTypeId,
+         a.status, a.notes, a.extra_json AS extraJson,
          a.created_at AS createdAt, a.updated_at AS updatedAt,
          m.name AS manufacturerName, m.image AS manufacturerImage,
          t.name AS assetTypeName, t.image AS assetTypeImage,
@@ -1517,6 +1608,7 @@ const ASSET_SELECT_PG = `
   SELECT a.id, a.company_id AS "companyId", a.name, a.asset_number AS "assetNumber", a.image,
          a.person_id AS "personId", a.location_id AS "locationId",
          a.manufacturer_id AS "manufacturerId", a.asset_type_id AS "assetTypeId",
+         a.status, a.notes, a.extra_json AS "extraJson",
          a.created_at AS "createdAt", a.updated_at AS "updatedAt",
          m.name AS "manufacturerName", m.image AS "manufacturerImage",
          t.name AS "assetTypeName", t.image AS "assetTypeImage",
@@ -1585,12 +1677,13 @@ async function findAssetByNumber(companyId, assetNumber, exceptId = "") {
 
 async function insertAsset(asset) {
   await ensureReady();
+  const extraJson = serializeAssetExtra(asset);
   if (usePostgres()) {
     await (
       await getPg()
     ).query(
-      `INSERT INTO assets (id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, location_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      `INSERT INTO assets (id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, location_id, status, notes, extra_json, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         asset.id,
         asset.companyId,
@@ -1601,6 +1694,9 @@ async function insertAsset(asset) {
         asset.image ?? "",
         asset.personId || null,
         asset.locationId || null,
+        asset.status ?? "",
+        asset.notes ?? "",
+        extraJson,
         asset.createdAt,
         asset.updatedAt,
       ]
@@ -1609,8 +1705,8 @@ async function insertAsset(asset) {
   }
   getSqlite()
     .prepare(
-      `INSERT INTO assets (id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, location_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO assets (id, company_id, manufacturer_id, asset_type_id, name, asset_number, image, person_id, location_id, status, notes, extra_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       asset.id,
@@ -1622,6 +1718,9 @@ async function insertAsset(asset) {
       asset.image ?? "",
       asset.personId || null,
       asset.locationId || null,
+      asset.status ?? "",
+      asset.notes ?? "",
+      extraJson,
       asset.createdAt,
       asset.updatedAt
     );
@@ -1631,6 +1730,10 @@ async function insertAsset(asset) {
 async function updateAssetRecord(companyId, assetId, fields) {
   const current = await findAssetById(companyId, assetId);
   if (!current) return null;
+  const extraSource = { ...current };
+  for (const key of ASSET_EXTRA_KEYS) {
+    if (fields[key] !== undefined) extraSource[key] = fields[key];
+  }
   const next = {
     name: fields.name ?? current.name,
     assetNumber: fields.assetNumber ?? current.assetNumber,
@@ -1641,6 +1744,9 @@ async function updateAssetRecord(companyId, assetId, fields) {
       fields.locationId !== undefined ? fields.locationId || "" : current.locationId || "",
     manufacturerId: fields.manufacturerId ?? current.manufacturerId,
     assetTypeId: fields.assetTypeId ?? current.assetTypeId,
+    status: fields.status !== undefined ? fields.status : current.status || "",
+    notes: fields.notes !== undefined ? fields.notes : current.notes || "",
+    extraJson: serializeAssetExtra(extraSource),
     updatedAt: new Date().toISOString(),
   };
   await ensureReady();
@@ -1648,8 +1754,8 @@ async function updateAssetRecord(companyId, assetId, fields) {
     await (
       await getPg()
     ).query(
-      `UPDATE assets SET name = $1, asset_number = $2, image = $3, person_id = $4, location_id = $5, manufacturer_id = $6, asset_type_id = $7, updated_at = $8
-       WHERE company_id = $9 AND id = $10`,
+      `UPDATE assets SET name = $1, asset_number = $2, image = $3, person_id = $4, location_id = $5, manufacturer_id = $6, asset_type_id = $7, status = $8, notes = $9, extra_json = $10, updated_at = $11
+       WHERE company_id = $12 AND id = $13`,
       [
         next.name ?? "",
         next.assetNumber ?? "",
@@ -1658,6 +1764,9 @@ async function updateAssetRecord(companyId, assetId, fields) {
         next.locationId || null,
         next.manufacturerId,
         next.assetTypeId,
+        next.status ?? "",
+        next.notes ?? "",
+        next.extraJson,
         next.updatedAt,
         companyId,
         assetId,
@@ -1667,7 +1776,7 @@ async function updateAssetRecord(companyId, assetId, fields) {
   }
   getSqlite()
     .prepare(
-      `UPDATE assets SET name = ?, asset_number = ?, image = ?, person_id = ?, location_id = ?, manufacturer_id = ?, asset_type_id = ?, updated_at = ?
+      `UPDATE assets SET name = ?, asset_number = ?, image = ?, person_id = ?, location_id = ?, manufacturer_id = ?, asset_type_id = ?, status = ?, notes = ?, extra_json = ?, updated_at = ?
        WHERE company_id = ? AND id = ?`
     )
     .run(
@@ -1678,6 +1787,9 @@ async function updateAssetRecord(companyId, assetId, fields) {
       next.locationId || null,
       next.manufacturerId,
       next.assetTypeId,
+      next.status ?? "",
+      next.notes ?? "",
+      next.extraJson,
       next.updatedAt,
       companyId,
       assetId
@@ -1993,6 +2105,10 @@ function publicCompany(company) {
   };
 }
 
+function persistEmailAlerts(value) {
+  return value === true || value === 1 || value === "1";
+}
+
 function publicAgent(agent) {
   return {
     id: agent.id,
@@ -2000,6 +2116,7 @@ function publicAgent(agent) {
     email: agent.email,
     ...(agent.phone ? { phone: agent.phone } : {}),
     color: agent.color || DEFAULT_AGENT_COLOR,
+    emailAlerts: persistEmailAlerts(agent.emailAlerts),
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
   };
